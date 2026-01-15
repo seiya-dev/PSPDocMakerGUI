@@ -1,0 +1,10 @@
+__pycache__
+.vscode
+venv
+*.png
+*.ini
+*.dat
+*.zip
+*.toc
+*.pkg
+*.exe

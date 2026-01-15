@@ -1,0 +1,1179 @@
+import os
+import sys
+import re
+import shutil
+import configparser
+import random
+import subprocess
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple, Optional, Iterable
+from functools import lru_cache
+
+try:
+    import wx
+    import wx.lib.scrolledpanel
+    from wx.lib.agw.floatspin import FloatSpin
+except ImportError as e:
+    raise SystemExit('This app requires wxPython. Install with: pip install wxpython') from e
+
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+except ImportError as e:
+    raise SystemExit('This app requires Pillow. Install with: pip install pillow') from e
+
+from pspdocmaker.font_resolver import FontResolver, load_font
+from pspdocmaker.psp_docdat import extract_pngs_from_dat, pack_pngs_to_dat, iter_png_blobs_from_dat
+
+from pspdocmaker.utils import (
+    clamp, rgb_to_hex, hex_to_rgb, wx_col_to_hex, detect_text_encoding,
+    ensure_dir, list_image_files, list_text_files, is_dat_file, get_w,
+    width_cache,
+)
+
+APP_NAME = 'PSP DocMaker NX (GUI)'
+CONFIG_FILE = 'pspdocmaker-config.ini'
+
+# ---------------------------
+# Rendering Engine
+# ---------------------------
+
+@dataclass
+class RenderSettings:
+    page_w: int = 480
+    page_h: int = 272
+    
+    margin_left:   int = 16
+    margin_top:    int = 16
+    margin_right:  int = 16
+    margin_bottom: int = 16
+    
+    font_path: Optional[str] = None
+    font_size: int = 14
+    font_color: Tuple[int, int, int] = (255, 255, 255)
+    
+    word_wrap: bool = True
+    line_spacing: int = 4
+    indent_first_line: int = 0
+    
+    background_mode: str = 'solid'
+    bg_color: Tuple[int, int, int] = (0, 0, 0)
+    grad_start: Tuple[int, int, int] = (10, 10, 10)
+    grad_end: Tuple[int, int, int] = (70, 70, 70)
+    frame_color: Tuple[int, int, int] = (255, 255, 255)
+    frame_thickness: int = 5
+    invert: bool = False
+    random_style_gradient: bool = False
+    random_style_frame: bool = False
+    
+    background_image: Optional[str] = None
+
+@lru_cache(maxsize=64)
+def _cached_gradient(w: int, h: int,
+                     c1: tuple[int, int, int],
+                     c2: tuple[int, int, int]) -> Image.Image:
+    
+    mask = Image.linear_gradient('L').resize((1, h))
+    
+    r = Image.eval(mask, lambda t: int(c1[0] + (c2[0] - c1[0]) * t / 255))
+    g = Image.eval(mask, lambda t: int(c1[1] + (c2[1] - c1[1]) * t / 255))
+    b = Image.eval(mask, lambda t: int(c1[2] + (c2[2] - c1[2]) * t / 255))
+    
+    grad = Image.merge('RGB', (r, g, b))
+    return grad.resize((w, h), Image.Resampling.BILINEAR)
+
+
+def make_background(rs: RenderSettings, page_index: int = 0) -> Image.Image:
+    w, h = rs.page_w, rs.page_h
+    grad_start, grad_end = rs.grad_start, rs.grad_end
+    frame_color = rs.frame_color
+    
+    # --- random styles ---
+    if rs.random_style_gradient:
+        rng = random.Random(100000 + page_index)
+        grad_start = (
+            rng.randrange(256),
+            rng.randrange(256),
+            rng.randrange(256),
+        )
+        grad_end = (
+            rng.randrange(256),
+            rng.randrange(256),
+            rng.randrange(256),
+        )
+    
+    if rs.random_style_frame:
+        rng = random.Random(200000 + page_index)
+        frame_color = (
+            rng.randrange(256),
+            rng.randrange(256),
+            rng.randrange(256),
+        )
+    
+    # --- background base ---
+    if rs.background_image:
+        try:
+            base = (
+                Image.open(rs.background_image)
+                .convert('RGB')
+                .resize((w, h), Image.Resampling.LANCZOS)
+            )
+        except Exception:
+            base = Image.new('RGB', (w, h), rs.bg_color)
+    
+    elif rs.background_mode == 'solid':
+        base = Image.new('RGB', (w, h), rs.bg_color)
+    
+    elif rs.background_mode == 'gradient':
+        base = _cached_gradient(
+            w, h,
+            grad_start,
+            grad_end
+        ).copy()
+    
+    else:
+        # fallback
+        base = Image.new('RGB', (w, h), rs.bg_color)
+    
+    # --- frame ---
+    if rs.background_mode == 'frame':
+        draw = ImageDraw.Draw(base)
+        t = clamp(rs.frame_thickness, 1, 50)
+        for i in range(t):
+            draw.rectangle(
+                [i, i, w - 1 - i, h - 1 - i],
+                outline=frame_color
+            )
+    
+    # --- invert ---
+    if rs.invert:
+        base = ImageOps.invert(base)
+    
+    return base
+
+def split_text_to_lines(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, max_width: int, rs: RenderSettings) -> List[str]:
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    lines_out = []
+    for raw_line in text.split('\n'):
+        if raw_line == '':
+            lines_out.append('')
+            continue
+        if not rs.word_wrap:
+            buf = ''
+            for ch in raw_line:
+                cand = buf + ch
+                # w = draw.textlength(cand, font=font)
+                w = get_w(cand, draw, font)
+                if w <= max_width or buf == '':
+                    buf = cand
+                else:
+                    lines_out.append(buf)
+                    buf = ch
+            if buf:
+                lines_out.append(buf)
+            continue
+        
+        words = re.split(r'(\s+)', raw_line)
+        cur = ''
+        for tok in words:
+            cand = cur + tok
+            # w = draw.textlength(cand, font=font)
+            w = get_w(cand, draw, font)
+            if w <= max_width or cur == '':
+                cur = cand
+            else:
+                lines_out.append(cur.rstrip('\n'))
+                cur = tok.lstrip()
+        if cur != '':
+            lines_out.append(cur.rstrip('\n'))
+    return lines_out
+
+def render_text_to_pages(text: str, rs: RenderSettings, start_page_index: int = 0) -> List[Image.Image]:
+    PAGEBREAK_TOKEN = '<<PAGEBREAK>>'
+    INLINE_PB = '@pb@'
+    font = load_font(rs.font_path, rs.font_size)
+    
+    parts: List[str] = []
+    for line in text.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        if INLINE_PB in line:
+            segs = line.split(INLINE_PB)
+            for i, seg in enumerate(segs):
+                if seg != '': parts.append(seg)
+                if i != len(segs) - 1: parts.append('\n'+PAGEBREAK_TOKEN+'\n')
+        else:
+            parts.append(line)
+        parts.append('\n')
+    norm = ''.join(parts)
+    
+    max_text_w = rs.page_w - rs.margin_left - rs.margin_right
+    max_text_h = rs.page_h - rs.margin_top - rs.margin_bottom
+    ascent, descent = font.getmetrics()
+    base_line_h = ascent + descent + rs.line_spacing
+    
+    pages = []
+    cur_page_index = start_page_index
+    cur_img = make_background(rs, page_index=cur_page_index)
+    draw = ImageDraw.Draw(cur_img)
+    x0 = rs.margin_left
+    y = rs.margin_top
+    
+    def new_page():
+        nonlocal cur_img, draw, y, cur_page_index
+        pages.append(cur_img)
+        cur_page_index += 1
+        cur_img = make_background(rs, page_index=cur_page_index)
+        draw = ImageDraw.Draw(cur_img)
+        y = rs.margin_top
+    
+    chunks = norm.split('\n')
+    for raw in chunks:
+        if raw == PAGEBREAK_TOKEN:
+            new_page()
+            continue
+        if raw == '':
+            y += base_line_h
+            if y + base_line_h > rs.margin_top + max_text_h:
+                new_page()
+            continue
+        
+        wrapped = split_text_to_lines(raw, draw, font, max_text_w - rs.indent_first_line, rs)
+        for li, line in enumerate(wrapped):
+            if line == '' and li == 0:
+                y += base_line_h
+                continue
+            indent = rs.indent_first_line if li == 0 else 0
+            draw.text((x0 + indent, y), line, font=font, fill=rs.font_color)
+            y += base_line_h
+            if y + base_line_h > rs.margin_top + max_text_h:
+                new_page()
+    pages.append(cur_img)
+    return pages
+
+def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = False, page_index: int = 0) -> Image.Image:
+    base = make_background(rs, page_index=page_index)
+    
+    try:
+        img = Image.open(img_path).convert('RGBA')
+    except Exception:
+        draw = ImageDraw.Draw(base)
+        draw.text((10, 10), f'Failed to open:\n{img_path.name}', fill=(255, 0, 0))
+        return base
+    
+    img.thumbnail(
+        (rs.page_w, rs.page_h),
+        Image.Resampling.LANCZOS
+    )
+    
+    bw, bh = rs.page_w, rs.page_h
+    iw, ih = img.size
+    
+    x = (bw - iw) // 2
+    y = (bh - ih) // 2
+    
+    if not for_file:
+        base_rgba = base.convert('RGBA')
+        base_rgba.alpha_composite(img, (x, y))
+        return base_rgba.convert('RGB')
+    else:
+        return img
+
+# ---------------------------
+# UI: Main Application
+# ---------------------------
+
+class MainFrame(wx.Frame):
+    def __init__(self):
+        super().__init__(None, title=APP_NAME, size=(1000, 680))
+        self.SetMinSize((950, 600))
+        
+        self.panel = wx.Panel(self)
+        
+        # State
+        self.key_bytes = bytes(0x10)
+        
+        self.base_dir = Path.cwd()
+        self.temp_dir = self.base_dir / '_tmp_pages'
+        self.output_dir = self.base_dir / 'output'
+        ensure_dir(self.output_dir)
+        
+        self.inputs: List[Path] = []
+        self.preview_pages: List[Path] = []
+        self.preview_index = 0
+        self.preview_bitmap = None
+        self.cfg = configparser.ConfigParser()
+
+        self._load_config()
+        self._init_ui()
+        self._apply_config_to_widgets()
+        self.font_resolver = FontResolver()
+        self._ensure_default_font()
+        
+        self.Center()
+    
+    def _init_ui(self):
+        main_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # --- LEFT PANEL: Files ---
+        left_sizer = wx.BoxSizer(wx.VERTICAL)
+        lbl_files = wx.StaticText(self.panel, label='Files / Folders')
+        lbl_files.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        left_sizer.Add(lbl_files, 0, wx.ALL, 5)
+        
+        self.lst_files = wx.ListBox(self.panel, style=wx.LB_EXTENDED | wx.LB_HSCROLL)
+        self.lst_files.SetMinSize((250, -1))
+        self.lst_files.Bind(wx.EVT_LISTBOX_DCLICK, lambda e: self.on_preview_selected())
+        left_sizer.Add(self.lst_files, 1, wx.EXPAND | wx.ALL, 5)
+        
+        # File Buttons
+        btn_sizer1 = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_add_files = wx.Button(self.panel, label='Add Files')
+        self.btn_add_folder = wx.Button(self.panel, label='Add Folder')
+        self.btn_remove = wx.Button(self.panel, label='Remove')
+        
+        btn_sizer1.Add(self.btn_add_files, 1, wx.RIGHT, 2)
+        btn_sizer1.Add(self.btn_add_folder, 1, wx.RIGHT, 2)
+        btn_sizer1.Add(self.btn_remove, 1, wx.LEFT, 2)
+        left_sizer.Add(btn_sizer1, 0, wx.EXPAND | wx.ALL, 5)
+        
+        btn_sizer2 = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_up = wx.Button(self.panel, label='Up')
+        self.btn_down = wx.Button(self.panel, label='Down')
+        self.btn_clear = wx.Button(self.panel, label='Clear')
+        
+        btn_sizer2.Add(self.btn_up, 1, wx.RIGHT, 2)
+        btn_sizer2.Add(self.btn_down, 1, wx.RIGHT, 2)
+        btn_sizer2.Add(self.btn_clear, 1, wx.LEFT, 2)
+        left_sizer.Add(btn_sizer2, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Bindings
+        self.Bind(wx.EVT_BUTTON, self.on_add_files, self.btn_add_files)
+        self.Bind(wx.EVT_BUTTON, self.on_add_folder, self.btn_add_folder)
+        self.Bind(wx.EVT_BUTTON, self.on_remove, self.btn_remove)
+        self.Bind(wx.EVT_BUTTON, lambda e: self.on_move(-1), self.btn_up)
+        self.Bind(wx.EVT_BUTTON, lambda e: self.on_move(1), self.btn_down)
+        self.Bind(wx.EVT_BUTTON, self.on_clear, self.btn_clear)
+        
+        main_sizer.Add(left_sizer, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # --- RIGHT PANEL: Settings ---
+        right_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # --- Preview Panel ---
+        self.preview_panel = wx.Panel(self.panel)
+        self.preview_panel.SetBackgroundColour(wx.BLACK)
+        
+        self.preview_canvas = wx.StaticBitmap(self.preview_panel)
+        
+        pv_inner = wx.BoxSizer(wx.VERTICAL)
+        pv_inner.AddStretchSpacer()
+        pv_inner.Add(self.preview_canvas, 0, wx.ALIGN_CENTER)
+        pv_inner.AddStretchSpacer()
+        
+        pv_sizer = wx.BoxSizer(wx.VERTICAL)
+        pv_sizer.Add(pv_inner, 1, wx.EXPAND)
+        
+        self.preview_panel.SetSizer(pv_sizer)
+        
+        right_sizer.Add(self.preview_panel, 1, wx.EXPAND | wx.ALL, 5)
+        
+        self.preview_panel.Bind(wx.EVT_SIZE, self._on_preview_resize)
+        
+        # Prev/Next
+        nav_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        self.btn_prev = wx.Button(self.panel, label='◀')
+        self.btn_next = wx.Button(self.panel, label='▶')
+        
+        self.st_page = wx.StaticText(self.panel, label='EMPTY')
+        
+        nav_sizer.Add(self.btn_prev, 0, wx.RIGHT, 5)
+        nav_sizer.Add(self.st_page, 1, wx.ALIGN_CENTER)
+        nav_sizer.Add(self.btn_next, 0, wx.LEFT, 5)
+        
+        right_sizer.Add(nav_sizer, 0, wx.EXPAND | wx.BOTTOM, 5)
+        
+        self.btn_prev.Bind(wx.EVT_BUTTON, lambda e: self._preview_step(-1))
+        self.btn_next.Bind(wx.EVT_BUTTON, lambda e: self._preview_step(1))
+        
+        # General Options
+        sb_opts = wx.StaticBoxSizer(wx.VERTICAL, self.panel, 'General Options')
+        
+        # Row 1:
+        row1 = wx.BoxSizer(wx.HORIZONTAL)
+        row1.Add(wx.StaticText(self.panel, label='DOCUMENT.DAT TYPE:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        
+        self.doc_type = wx.Choice(self.panel, choices=['PS1 on PSP/PS3', 'PSP & PS minis'])
+        
+        row1.Add(self.doc_type, 0, wx.RIGHT, 10)
+        self.doc_type.Bind(wx.EVT_CHOICE, self._on_doc_type_change)
+        
+        self.doc_type.SetToolTip(
+            'Manual Format:\n'
+            '• PS1 Game (EBOOT.BIN)\n'
+            '• PSP / PS Mini'
+        )
+        
+        self.btn_keysbin = wx.Button(self.panel, label='KEYS.BIN')
+        row1.Add(self.btn_keysbin, 0, wx.RIGHT, 5)
+        self.btn_keysbin.Bind(wx.EVT_BUTTON, self._open_keysbin)
+        
+        self.btn_keysbin.SetToolTip(
+            'Open KEYS.BIN, required for official PS1 Manuals\n'
+            '• Must be exactly 16 bytes\n'
+            '• Binary format\n'
+            '• No padding'
+        )
+        
+        self.st_keytxt = wx.StaticText(self.panel, label=bytes(0x10).hex().upper())
+        row1.Add(self.st_keytxt, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        
+        self.btn_keyreset = wx.Button(self.panel, label='RESET KEY')
+        row1.Add(self.btn_keyreset, 0, wx.RIGHT, 5)
+        self.btn_keyreset.Bind(wx.EVT_BUTTON, self._reset_keysbin)
+        
+        sb_opts.Add(row1, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Row 2: Size, Wrap, Merge, Keep
+        row2 = wx.BoxSizer(wx.HORIZONTAL)
+        row2.Add(wx.StaticText(self.panel, label='Size:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.ch_size = wx.Choice(self.panel, choices=['480x248', '480x272', '480x480', '480x960'])
+        row2.Add(self.ch_size, 0, wx.RIGHT, 15)
+        
+        self.chk_wrap = wx.CheckBox(self.panel, label='Word Wrap')
+        row2.Add(self.chk_wrap, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 15)
+        
+        self.chk_wrap.SetToolTip(
+            'Lines are wrapped across the screen by words\n'
+            'Unchecked this if you have a specially prepared text file'
+        )
+        
+        self.chk_merge = wx.CheckBox(self.panel, label='Merge all to one')
+        row2.Add(self.chk_merge, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 15)
+        
+        self.chk_merge.SetToolTip(
+            'If checked: All files from the list are converted into one project.\n'
+            'Otherwise only selected file(s) in the list will be converted'
+        )
+        
+        self.chk_keep = wx.CheckBox(self.panel, label='Keep temp PNGs')
+        row2.Add(self.chk_keep, 0, wx.ALIGN_CENTER_VERTICAL)
+        
+        self.chk_keep.SetToolTip('Do not delete _tmp_pages folder after DOCUMENT.DAT creation')
+        
+        sb_opts.Add(row2, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Row 3: Font Controls
+        row3 = wx.BoxSizer(wx.HORIZONTAL)
+        row3.Add(wx.StaticText(self.panel, label='Font Size:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.spn_font_size = wx.SpinCtrl(self.panel, min=8, max=72)
+        row3.Add(self.spn_font_size, 0, wx.RIGHT, 10)
+        
+        self.btn_font_path = wx.Button(self.panel, label='Select Font...')
+        self.btn_font_path.Bind(wx.EVT_BUTTON, self.on_pick_font)
+        row3.Add(self.btn_font_path, 0, wx.RIGHT, 10)
+        
+        self.btn_font_color = wx.Button(self.panel, label='Font Color')
+        self.btn_font_color.Bind(wx.EVT_BUTTON, self.on_pick_font_color)
+        row3.Add(self.btn_font_color, 0, wx.RIGHT, 20)
+        
+        row3.Add(wx.StaticText(self.panel, label='Indent:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.spn_indent = wx.SpinCtrl(self.panel, min=0, max=100)
+        row3.Add(self.spn_indent, 0)
+        sb_opts.Add(row3, 0, wx.EXPAND | wx.ALL, 5)
+        
+        right_sizer.Add(sb_opts, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Background Options
+        sb_bg = wx.StaticBoxSizer(wx.VERTICAL, self.panel, 'Background Settings')
+        
+        # Row 3: Mode and Flags
+        row3 = wx.BoxSizer(wx.HORIZONTAL)
+        row3.Add(wx.StaticText(self.panel, label='Mode:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        
+        self.ch_bg_mode = wx.Choice(self.panel, choices=['solid', 'gradient', 'frame'])
+        row3.Add(self.ch_bg_mode, 0, wx.RIGHT, 10)
+        
+        self.chk_invert = wx.CheckBox(self.panel, label='Invert Colors')
+        row3.Add(self.chk_invert, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+        self.chk_rand_grad = wx.CheckBox(self.panel, label='Rnd Gradient')
+        row3.Add(self.chk_rand_grad, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+        self.chk_rand_frame = wx.CheckBox(self.panel, label='Rnd Frame')
+        row3.Add(self.chk_rand_frame, 0, wx.ALIGN_CENTER_VERTICAL)
+        sb_bg.Add(row3, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Row 4: Color Pickers
+        row4 = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_bg_solid = wx.Button(self.panel, label='Solid Color')
+        self.btn_bg_start = wx.Button(self.panel, label='Grad Start')
+        self.btn_bg_end = wx.Button(self.panel, label='Grad End')
+        self.btn_bg_frame = wx.Button(self.panel, label='Frame Color')
+        
+        for btn in (self.btn_bg_solid, self.btn_bg_start, self.btn_bg_end, self.btn_bg_frame):
+            row4.Add(btn, 1, wx.RIGHT, 5)
+        
+        self.btn_bg_solid.Bind(wx.EVT_BUTTON, self.on_pick_bg_color)
+        self.btn_bg_start.Bind(wx.EVT_BUTTON, lambda e: self.on_pick_grad('start'))
+        self.btn_bg_end.Bind(wx.EVT_BUTTON, lambda e: self.on_pick_grad('end'))
+        self.btn_bg_frame.Bind(wx.EVT_BUTTON, self.on_pick_frame_color)
+        sb_bg.Add(row4, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Row 5: Frame Thickness and Image
+        row5 = wx.BoxSizer(wx.HORIZONTAL)
+        row5.Add(wx.StaticText(self.panel, label='Frame Thickness:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.spn_frame_thick = wx.SpinCtrl(self.panel, min=1, max=50)
+        row5.Add(self.spn_frame_thick, 0, wx.RIGHT, 5)
+        
+        self.btn_bg_img = wx.Button(self.panel, label='BG Image...')
+        self.btn_bg_img.Bind(wx.EVT_BUTTON, self.on_pick_bg_image)
+        row5.Add(self.btn_bg_img, 0, wx.RIGHT, 5)
+        
+        self.btn_clr_bg_img = wx.Button(self.panel, label='Clear BG Img')
+        self.btn_clr_bg_img.Bind(wx.EVT_BUTTON, self.on_clear_bg_image)
+        row5.Add(self.btn_clr_bg_img, 0)
+        
+        sb_bg.Add(row5, 0, wx.EXPAND | wx.ALL, 5)
+        right_sizer.Add(sb_bg, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Action Buttons
+        act_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_preview = wx.Button(self.panel, label='Preview')
+        self.btn_create = wx.Button(self.panel, label='Create .DAT')
+        self.btn_extract = wx.Button(self.panel, label='Extract from .DAT')
+        self.btn_save_cfg = wx.Button(self.panel, label='Save Settings')
+        
+        act_sizer.Add(self.btn_preview, 1, wx.RIGHT, 5)
+        act_sizer.Add(self.btn_create, 1, wx.RIGHT, 5)
+        act_sizer.Add(self.btn_extract, 1, wx.RIGHT, 5)
+        act_sizer.Add(self.btn_save_cfg, 1)
+        
+        self.btn_preview.Bind(wx.EVT_BUTTON, self.on_preview_all)
+        self.btn_create.Bind(wx.EVT_BUTTON, self.on_create_dat)
+        self.btn_extract.Bind(wx.EVT_BUTTON, self.on_extract_dat)
+        self.btn_save_cfg.Bind(wx.EVT_BUTTON, self.on_save_settings)
+        
+        right_sizer.Add(act_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Progress and Status
+        self.gauge = wx.Gauge(self.panel, range=100)
+        right_sizer.Add(self.gauge, 0, wx.EXPAND | wx.ALL, 5)
+        
+        self.st_status = wx.StaticText(self.panel, label='Ready')
+        right_sizer.Add(self.st_status, 0, wx.ALL, 5)
+        
+        main_sizer.Add(right_sizer, 2, wx.EXPAND | wx.ALL, 5)
+        self.panel.SetSizer(main_sizer)
+    
+    # ---------------------------
+    # Config Logic
+    # ---------------------------
+    def _load_config(self):
+        p = self.base_dir / CONFIG_FILE
+        if p.exists():
+            try:
+                self.cfg.read(p, encoding='utf-8')
+            except Exception:
+                self.cfg.read(p)
+        for sec in ('General', 'Font', 'Layout', 'Background', 'Output'):
+            if sec not in self.cfg:
+                self.cfg[sec] = {}
+    
+    def _save_config_file(self):
+        p = self.base_dir / CONFIG_FILE
+        try:
+            with p.open('w', encoding='utf-8') as f:
+                self.cfg.write(f)
+        except Exception as e:
+            wx.MessageBox(f'Failed to save config:\n{e}', 'Error', wx.ICON_ERROR)
+    
+    def _apply_config_to_widgets(self):
+        # Size
+        size = self.cfg['Output'].get('size', '480x272')
+        idx = self.ch_size.FindString(size)
+        self.ch_size.SetSelection(idx if idx != wx.NOT_FOUND else 1)
+
+        self.doc_type.SetSelection(0)
+        
+        self.chk_wrap.SetValue(self.cfg['Layout'].getboolean('word_wrap', fallback=True))
+        self.chk_merge.SetValue(self.cfg['General'].getboolean('merge_files', fallback=False))
+        self.chk_keep.SetValue(self.cfg['General'].getboolean('keep_temp', fallback=False))
+        
+        self.spn_font_size.SetValue(int(self.cfg['Font'].get('size', '14')))
+        self.spn_indent.SetValue(int(self.cfg['Layout'].get('indent', '0')))
+        
+        bg_mode = self.cfg['Background'].get('mode', 'solid')
+        idx = self.ch_bg_mode.FindString(bg_mode)
+        self.ch_bg_mode.SetSelection(idx if idx != wx.NOT_FOUND else 0)
+        
+        self.chk_invert.SetValue(self.cfg['Background'].getboolean('invert', fallback=False))
+        self.chk_rand_grad.SetValue(self.cfg['Background'].getboolean('random_gradient', fallback=False))
+        self.chk_rand_frame.SetValue(self.cfg['Background'].getboolean('random_frame', fallback=False))
+        self.spn_frame_thick.SetValue(int(self.cfg['Background'].get('frame_thickness', '5')))
+        
+        # Store colors in temp vars for retrieval, widgets don't show color directly except via dialog
+        self.current_font_color = self.cfg['Font'].get('color', '#ffffff')
+        self.bg_solid = self.cfg['Background'].get('solid_color', '#000000')
+        self.bg_start = self.cfg['Background'].get('grad_start', '#0a0a0a')
+        self.bg_end = self.cfg['Background'].get('grad_end', '#404040')
+        self.bg_frame = self.cfg['Background'].get('frame_color', '#ffffff')
+        cfg_font = self.cfg['Font'].get('path', '').strip()
+        if cfg_font:
+            self.current_font_path = cfg_font
+        self.current_bg_image = self.cfg['Background'].get('image', '')
+    
+    def _gather_render_settings(self) -> RenderSettings:
+        size = self.ch_size.GetStringSelection()
+        w, h = map(int, size.split('x'))
+        rs = RenderSettings(page_w=w, page_h=h)
+        
+        rs.word_wrap = self.chk_wrap.GetValue()
+        rs.indent_first_line = self.spn_indent.GetValue()
+        rs.font_size = self.spn_font_size.GetValue()
+        rs.font_color = hex_to_rgb(self.current_font_color)
+        rs.font_path = self.current_font_path if self.current_font_path else None
+        
+        rs.background_mode = self.ch_bg_mode.GetStringSelection()
+        rs.invert = self.chk_invert.GetValue()
+        rs.random_style_gradient = self.chk_rand_grad.GetValue()
+        rs.random_style_frame = self.chk_rand_frame.GetValue()
+        rs.frame_thickness = self.spn_frame_thick.GetValue()
+        
+        rs.bg_color = hex_to_rgb(self.bg_solid)
+        rs.grad_start = hex_to_rgb(self.bg_start)
+        rs.grad_end = hex_to_rgb(self.bg_end)
+        rs.frame_color = hex_to_rgb(self.bg_frame)
+        rs.background_image = self.current_bg_image if Path(self.current_bg_image).exists() else None
+        
+        return rs
+    
+    def on_save_settings(self, event):
+        self.cfg['Output']['size'] = self.ch_size.GetStringSelection()
+        self.cfg['Layout']['word_wrap'] = '1' if self.chk_wrap.GetValue() else '0'
+        self.cfg['General']['merge_files'] = '1' if self.chk_merge.GetValue() else '0'
+        self.cfg['General']['keep_temp'] = '1' if self.chk_keep.GetValue() else '0'
+        
+        self.cfg['Font']['size'] = str(self.spn_font_size.GetValue())
+        self.cfg['Font']['color'] = self.current_font_color
+        self.cfg['Font']['path'] = self.current_font_path
+        
+        self.cfg['Layout']['indent'] = str(self.spn_indent.GetValue())
+        
+        self.cfg['Background']['mode'] = self.ch_bg_mode.GetStringSelection()
+        self.cfg['Background']['invert'] = '1' if self.chk_invert.GetValue() else '0'
+        self.cfg['Background']['random_gradient'] = '1' if self.chk_rand_grad.GetValue() else '0'
+        self.cfg['Background']['random_frame'] = '1' if self.chk_rand_frame.GetValue() else '0'
+        self.cfg['Background']['frame_thickness'] = str(self.spn_frame_thick.GetValue())
+        
+        self.cfg['Background']['solid_color'] = self.bg_solid
+        self.cfg['Background']['grad_start'] = self.bg_start
+        self.cfg['Background']['grad_end'] = self.bg_end
+        self.cfg['Background']['frame_color'] = self.bg_frame
+        self.cfg['Background']['image'] = self.current_bg_image
+        
+        self._save_config_file()
+        wx.MessageBox('Settings saved successfully.', 'Info', wx.OK | wx.ICON_INFORMATION)
+    
+    def _on_doc_type_change(self, event):
+        value = event.GetSelection()
+        
+        if value == 1:
+            self.btn_keysbin.Hide()
+            self.st_keytxt.Hide()
+            self.btn_keyreset.Hide()
+        
+        if value == 0:
+            self.btn_keysbin.Show()
+            self.st_keytxt.Show()
+            self.btn_keyreset.Show()
+    
+    # ---------------------------
+    # File Management
+    # ---------------------------
+    def _open_keysbin(self, e):
+        with wx.FileDialog(
+            self,
+            message='Choose KEYS.BIN',
+            wildcard='Binary key file|KEYS.BIN',
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST
+        ) as dlg:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            
+            fpath = dlg.GetPath()
+            
+            try:
+                with open(fpath, 'rb') as f:
+                    data = f.read()
+            except OSError as e:
+                wx.MessageBox(f'Failed to open file:\n{e}', 'Error', wx.OK | wx.ICON_ERROR)
+                return
+            
+            if len(data) != 16:
+                wx.MessageBox(
+                    f'Invalid KEYS.BIN size!\n'
+                    f'Expected: 16 bytes\n'
+                    f'Actual: {len(data)} bytes',
+                    'Invalid Key File',
+                    wx.OK | wx.ICON_ERROR
+                )
+                return
+            
+            self.key_bytes = data
+            
+            hex_key = data
+            wx.MessageBox(
+                f'Key loaded successfully:\n{hex_key.hex(' ').upper()}',
+                'Key OK',
+                wx.OK | wx.ICON_INFORMATION
+            )
+            
+            self.st_keytxt.SetLabel(hex_key.hex().upper())
+    
+    def _reset_keysbin(self, e):
+        wx.MessageBox(
+            f'Key was reset to:\n{bytes(0x10).hex(' ').upper()}',
+            'Key Reset OK',
+            wx.OK | wx.ICON_INFORMATION
+        )
+        
+        self.key_bytes = bytes(0x10)
+        self.st_keytxt.SetLabel(bytes(0x10).hex().upper())
+    
+    def _refresh_list(self):
+        self.lst_files.Clear()
+        for i, p in enumerate(self.inputs):
+            self.lst_files.Append(f'{i+1:03d}: {p.name}')
+    
+    def on_add_files(self, event):
+        with wx.FileDialog(self, 'Open files', wildcard='Supported files|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.txt;*.dat|All files|*.*',
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE) as fd:
+            if fd.ShowModal() == wx.ID_CANCEL:
+                return
+            paths = [Path(p) for p in fd.GetPaths()]
+            self._process_added_paths(paths)
+    
+    def on_add_folder(self, event):
+        with wx.DirDialog(self, 'Select folder', style=wx.DD_DEFAULT_STYLE) as dd:
+            if dd.ShowModal() == wx.ID_CANCEL:
+                return
+            folder = Path(dd.GetPath())
+            paths = list_image_files(folder) + list_text_files(folder) + list(folder.rglob('*.dat'))
+            self._process_added_paths(paths)
+    
+    def _process_added_paths(self, paths: List[Path]):
+        dats = [p for p in paths if is_dat_file(p)]
+        if dats:
+            dlg = wx.MessageDialog(self, 'DAT file detected. Extract PNGs now?', 'DAT Detected', wx.YES_NO | wx.ICON_QUESTION)
+            if dlg.ShowModal() == wx.ID_YES:
+                out_dir = self.base_dir / 'extracted_png'
+                extracted = extract_pngs_from_dat(dats[0], out_dir)
+                if extracted:
+                    self.inputs.extend(extracted)
+                else:
+                    wx.MessageBox('No PNGs found in DAT.', 'Warning', wx.ICON_WARNING)
+            paths = [p for p in paths if not is_dat_file(p)]
+        
+        for p in paths:
+            if p.exists():
+                self.inputs.append(p)
+        
+        self._refresh_list()
+    
+    def on_remove(self, event):
+        selections = self.lst_files.GetSelections()
+        if not selections: return
+        # Remove in reverse order
+        for idx in sorted(selections, reverse=True):
+            if 0 <= idx < len(self.inputs):
+                self.inputs.pop(idx)
+        self._refresh_list()
+    
+    def on_clear(self, event):
+        self.inputs.clear()
+        self._refresh_list()
+    
+    def on_move(self, delta):
+        selections = self.lst_files.GetSelections()
+        if len(selections) != 1: return
+        i = selections[0]
+        j = i + delta
+        if 0 <= j < len(self.inputs):
+            self.inputs[i], self.inputs[j] = self.inputs[j], self.inputs[i]
+            self._refresh_list()
+            self.lst_files.SetSelection(j)
+    
+    def reset_temp_dir(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        ensure_dir(self.temp_dir)
+    
+    # ---------------------------
+    # Color & Font Pickers
+    # ---------------------------
+    def _pick_color(self, title, current_hex):
+        data = wx.ColourData()
+        try:
+            rgb = hex_to_rgb(current_hex)
+            data.SetColour(wx.Colour(*rgb))
+        except: pass
+        
+        with wx.ColourDialog(self, data) as dlg:
+            if dlg.ShowModal() == wx.ID_OK:
+                return wx_col_to_hex(dlg.GetColourData().GetColour())
+        return None
+    
+    def on_pick_font_color(self, e):
+        c = self._pick_color('Font Color', self.current_font_color)
+        if c: self.current_font_color = c
+    
+    def on_pick_bg_color(self, e):
+        c = self._pick_color('Background Color', self.bg_solid)
+        if c: self.bg_solid = c
+    
+    def on_pick_grad(self, which):
+        curr = self.bg_start if which == 'start' else self.bg_end
+        c = self._pick_color(f'Gradient {which}', curr)
+        if c:
+            if which == 'start': self.bg_start = c
+            else: self.bg_end = c
+    
+    def on_pick_frame_color(self, e):
+        c = self._pick_color('Frame Color', self.bg_frame)
+        if c: self.bg_frame = c
+    
+    def _ensure_default_font(self):
+        # Ensure a valid default font is selected using FontResolver.
+        
+        cfg_path = self.cfg['Font'].get('path', '').strip()
+        if cfg_path:
+            try:
+                ImageFont.truetype(cfg_path, self.spn_font_size.GetValue())
+                self.current_font_path = cfg_path
+                return
+            except Exception:
+                pass  # fallback below
+        
+        wx_font = wx.SystemSettings.GetFont(wx.SYS_DEFAULT_GUI_FONT)
+        
+        font_path = self.font_resolver.resolve(wx_font)
+        if font_path:
+            self.current_font_path = font_path
+            self.spn_font_size.SetValue(wx_font.GetPointSize())
+            return
+        
+        if sys.platform.startswith('win'):
+            fallback = Path(os.environ.get('WINDIR', 'C:\\Windows')) / 'Fonts' / 'arial.ttf'
+        else:
+            fallback = Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+        
+        if fallback.exists():
+            self.current_font_path = str(fallback)
+            return
+        
+        wx.MessageBox(
+            'No usable font could be found on this system.\n'
+            'Please select a font manually.',
+            'Font error',
+            wx.OK | wx.ICON_ERROR,
+            parent=self,
+        )
+    
+    def on_pick_font(self, e):
+        data = wx.FontData()
+        data.EnableEffects(False)
+        
+        with wx.FontDialog(self, data) as dlg:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            
+            wx_font = dlg.GetFontData().GetChosenFont()
+            
+            font_path = self.font_resolver.resolve(wx_font)
+            if not font_path:
+                wx.MessageBox(
+                    'Cannot locate font file for selected font.\n'
+                    'Please choose another font.',
+                    'Font error',
+                    wx.OK | wx.ICON_WARNING,
+                    parent=self,
+                )
+                return
+            
+            self.spn_font_size.SetValue(wx_font.GetPointSize())
+            self.current_font_path = font_path
+    
+    def on_pick_bg_image(self, e):
+        with wx.FileDialog(self, 'Select BG Image', wildcard='Images|*.png;*.jpg;*.jpeg;*.bmp', style=wx.FD_OPEN) as fd:
+            if fd.ShowModal() == wx.ID_OK:
+                self.current_bg_image = fd.GetPath()
+    
+    def on_clear_bg_image(self, e):
+        self.current_bg_image = ''
+    
+    # ---------------------------
+    # Preview
+    # ---------------------------
+    def _show_preview_page(self):
+        if not self.preview_pages:
+            self.preview_canvas.SetBitmap(wx.NullBitmap)
+            self.st_page.SetLabel('NO PREVIEW')
+            return
+        
+        p = self.preview_pages[self.preview_index]
+        
+        img = wx.Image(str(p), wx.BITMAP_TYPE_ANY)
+        
+        w, h = self.preview_panel.GetClientSize()
+        if w < 10 or h < 10:
+            return
+        
+        iw, ih = img.GetWidth(), img.GetHeight()
+        ratio = min(w / iw, h / ih)
+        nw, nh = max(1, int(iw * ratio)), max(1, int(ih * ratio))
+        
+        img = img.Scale(nw, nh, wx.IMAGE_QUALITY_HIGH)
+        bmp = wx.Bitmap(img)
+        
+        self.preview_canvas.SetBitmap(bmp)
+        self.preview_bitmap = bmp
+        
+        self.st_page.SetLabel(
+            f'PREVIEW PAGE: {self.preview_index + 1:04d} / {len(self.preview_pages):04d}'
+        )
+        
+        self.preview_panel.Layout()
+    
+    def _preview_step(self, delta):
+        if not self.preview_pages:
+            return
+        self.preview_index = (self.preview_index + delta) % len(self.preview_pages)
+        self._show_preview_page()
+    
+    def _on_preview_resize(self, event):
+        if self.preview_bitmap:
+            self._show_preview_page()
+        event.Skip()
+    
+    # ---------------------------
+    # Rendering & Actions
+    # ---------------------------
+    def _update_status(self, msg):
+        self.st_status.SetLabel(msg)
+        # wx.GetApp().Yield()
+        wx.YieldIfNeeded()
+    
+    def _render_all_logic(self, rs: RenderSettings, files: list[Path], for_file: bool, progress_cb):
+        width_cache.clear()
+        self.reset_temp_dir()
+        
+        pages: List[Image.Image] = []
+        page_index = 0
+        
+        def add_pages(new_pages):
+            nonlocal page_index
+            for im in new_pages:
+                pages.append(im)
+                page_index += 1
+        
+        for p in files:
+            progress_cb(f'Rendering {p.name}')
+            if p.suffix.lower() == '.txt':
+                enc = detect_text_encoding(p)
+                text = p.read_text(encoding=enc, errors='replace')
+                add_pages(render_text_to_pages(text, rs, page_index))
+            else:
+                add_pages([render_image_to_page(p, rs, for_file, page_index)])
+        
+        return pages
+    
+    def _start_render_thread(self, for_file: bool = False):
+        merge = self.chk_merge.GetValue()
+        
+        def progress_cb(msg):
+            wx.CallAfter(self._update_progress, msg)
+        
+        if not merge:
+            sel = self.lst_files.GetSelections()
+            if not sel:
+                wx.MessageBox(
+                    'Please select a files to render\nor enable "Merge all to one".',
+                    'No file selected',
+                    wx.OK | wx.ICON_WARNING,
+                )
+                return
+            files = list()
+            for i in range(len(sel)):
+                files.append(self.inputs[sel[i]])
+        else:
+            files = list(self.inputs)
+        
+        self._set_ui_busy(True)
+        self.gauge.SetRange(100)
+        self.gauge.Pulse()
+        self.st_status.SetLabel('Rendering pages…')
+        
+        rs = self._gather_render_settings()
+        
+        def worker():
+            try:
+                pages = self._render_all_logic(rs, files, for_file, progress_cb)
+                wx.CallAfter(self._on_render_done, pages, for_file)
+            except Exception as e:
+                wx.CallAfter(wx.MessageBox, str(e), 'Render error', wx.ICON_ERROR)
+            finally:
+                wx.CallAfter(self._set_ui_busy, False)
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _update_progress(self, msg):
+        self.st_status.SetLabel(msg)
+    
+    def _on_render_done(self, pages, for_file):
+        self.preview_pages.clear()
+        self.gauge.SetRange(len(pages))
+        self.gauge.SetValue(0)
+        self.st_status.SetLabel('Saving pages…')
+        
+        for i, im in enumerate(pages):
+            out = self.temp_dir / f'{i+1:04d}.png'
+            im.save(out, 'PNG', optimize=True)
+            self.preview_pages.append(out)
+            self.st_status.SetLabel(f'Saving pages {i+1}/{len(pages)}...')
+            self.gauge.SetValue(i+1)
+        
+        self.preview_index = 0
+        self._show_preview_page()
+        self.st_status.SetLabel(f'Rendered {len(pages)} pages.')
+        self.gauge.SetValue(self.gauge.GetRange())
+        
+        if for_file:
+            try:
+                self._update_status('Packing DAT...')
+                pack_pngs_to_dat(self.doc_type.GetSelection(), self.key_bytes, self.preview_pages, self.dest_dir)
+                self._update_status('Done.')
+            except Exception as e:
+                wx.MessageBox(str(e), 'Error', wx.ICON_ERROR)
+           
+        if for_file and not self.chk_keep.GetValue():
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            
+            self.preview_pages.clear()
+            self.preview_canvas.SetBitmap(wx.NullBitmap)
+            self.st_page.SetLabel('EMPTY')
+            self.preview_index = 0
+    
+    def _set_ui_busy(self, busy: bool):
+        for btn in (
+            # files / folders
+            self.btn_add_files,
+            self.btn_add_folder,
+            self.btn_remove,
+            self.btn_up,
+            self.btn_down,
+            self.btn_clear,
+            # preview
+            self.btn_prev,
+            self.btn_next,
+            # doc specific
+            self.doc_type,
+            self.btn_keysbin,
+            self.btn_keyreset,
+            # set text
+            self.ch_size,
+            self.chk_wrap,
+            self.chk_merge,
+            self.chk_keep,
+            self.spn_font_size,
+            self.btn_font_path,
+            self.btn_font_color,
+            self.spn_indent,
+            # set background
+            self.ch_bg_mode,
+            self.chk_invert,
+            self.chk_rand_grad,
+            self.chk_rand_frame,
+            self.btn_bg_solid,
+            self.btn_bg_start,
+            self.btn_bg_end,
+            self.btn_bg_frame,
+            self.spn_frame_thick,
+            self.btn_bg_img,
+            self.btn_clr_bg_img,
+            # buttons
+            self.btn_preview,
+            self.btn_create,
+            self.btn_extract,
+            self.btn_save_cfg,
+        ):
+            btn.Enable(not busy)
+    
+    def on_preview_all(self, event):
+        if not self.inputs:
+            wx.MessageBox('Add images or text files first.', 'Info')
+            return
+        
+        self._start_render_thread()
+    
+    def on_preview_selected(self):
+        sel = self.lst_files.GetSelections()
+        if not sel:
+            self.on_preview_all(None)
+            return
+        
+        idx = sel[0]
+        p = self.inputs[idx]
+        rs = self._gather_render_settings()
+        
+        self.reset_temp_dir()
+        
+        try:
+            if p.suffix.lower() == '.txt':
+                enc = detect_text_encoding(p)
+                text = p.read_text(encoding=enc, errors='replace')
+                pages = render_text_to_pages(text, rs)
+            else:
+                pages = [render_image_to_page(p, rs)]
+            
+            self.preview_pages = []
+            for i, im in enumerate(pages):
+                out = self.temp_dir / f'{i + 1:04d}.png'
+                im.save(out, format='PNG')
+                self.preview_pages.append(out)
+            
+            self.preview_index = 0
+            self._show_preview_page()
+        
+        except Exception as e:
+            wx.MessageBox(str(e), 'Error', wx.ICON_ERROR)
+    
+    def on_create_dat(self, event):
+        if not self.inputs:
+            wx.MessageBox('Add images or text files first.', 'Info')
+            return
+        
+        with wx.DirDialog(self, 'Select output folder', style=wx.DD_DEFAULT_STYLE) as dd:
+            if dd.ShowModal() == wx.ID_CANCEL: return
+            self.dest_dir = Path(dd.GetPath())
+            self._start_render_thread(for_file = True)
+    
+    def on_extract_dat(self, event):
+        with wx.FileDialog(self, 'Select DOCUMENT.DAT', wildcard='DAT files (*.dat)|*.dat', style=wx.FD_OPEN) as fd:
+            if fd.ShowModal() == wx.ID_CANCEL: return
+            dat_path = Path(fd.GetPath())
+        
+        with wx.DirDialog(self, 'Select output folder', style=wx.DD_DEFAULT_STYLE) as dd:
+            if dd.ShowModal() == wx.ID_CANCEL: return
+            out_dir = Path(dd.GetPath())
+        
+        try:
+            self._update_status('Extracting...')
+            files = extract_pngs_from_dat(dat_path, out_dir)
+            wx.MessageBox(f'Extracted {len(files)} images.', 'Success')
+            self._update_status('Ready')
+        except Exception as e:
+            wx.MessageBox(str(e), 'Error')
+
+if __name__ == '__main__':
+    app = wx.App(False)
+    frame = MainFrame()
+    frame.Show()
+    app.MainLoop()
