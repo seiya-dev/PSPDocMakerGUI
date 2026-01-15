@@ -8,3 +8,5 @@ venv
 *.toc
 *.pkg
 *.exe
+
+!docs/*
