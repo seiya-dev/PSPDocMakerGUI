@@ -3,7 +3,11 @@
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple
-from Crypto.Cipher import AES
+
+try:
+    from Crypto.Cipher import AES
+except ImportError as e:
+    raise SystemExit('This app requires Crypto. Install with: pip install pycryptodome') from e
 
 class BBoxException(Exception):
     def __init__(self, code: int, message: str = ''):
