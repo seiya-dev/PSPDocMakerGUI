@@ -1,15 +1,20 @@
+#!/usr/bin/python3
+#!/usr/bin/env python
+
 import os
-import sys
 import re
+import sys
 import shutil
-import configparser
 import random
-import subprocess
 import threading
-from dataclasses import dataclass
+import configparser
+
 from pathlib import Path
 from typing import List, Tuple, Optional, Iterable
-from functools import lru_cache
+
+# ---------------------------
+# Dependencies
+# ---------------------------
 
 try:
     import wx
@@ -23,8 +28,18 @@ try:
 except ImportError as e:
     raise SystemExit('This app requires Pillow. Install with: pip install pillow') from e
 
+# ---------------------------
+# User Modules
+# ---------------------------
+
 from pspdocmaker.font_resolver import FontResolver, load_font
 from pspdocmaker.psp_docdat import extract_pngs_from_dat, pack_pngs_to_dat, iter_png_blobs_from_dat
+
+from pspdocmaker.render import (
+    RenderSettings, _cached_gradient,
+    make_background, render_image_to_page,
+    split_text_to_lines, render_text_to_pages,
+)
 
 from pspdocmaker.utils import (
     clamp, rgb_to_hex, hex_to_rgb, wx_col_to_hex, detect_text_encoding,
@@ -32,251 +47,12 @@ from pspdocmaker.utils import (
     width_cache,
 )
 
-APP_NAME = 'PSP DocMaker NX (GUI)'
+# ---------------------------
+# Application
+# ---------------------------
+
+APP_NAME    = 'PSP DocMaker NX (GUI)'
 CONFIG_FILE = 'pspdocmaker-config.ini'
-
-# ---------------------------
-# Rendering Engine
-# ---------------------------
-
-@dataclass
-class RenderSettings:
-    page_w: int = 480
-    page_h: int = 272
-    
-    margin_left:   int = 16
-    margin_top:    int = 16
-    margin_right:  int = 16
-    margin_bottom: int = 16
-    
-    font_path: Optional[str] = None
-    font_size: int = 14
-    font_color: Tuple[int, int, int] = (255, 255, 255)
-    
-    word_wrap: bool = True
-    line_spacing: int = 4
-    indent_first_line: int = 0
-    
-    background_mode: str = 'solid'
-    bg_color: Tuple[int, int, int] = (0, 0, 0)
-    grad_start: Tuple[int, int, int] = (10, 10, 10)
-    grad_end: Tuple[int, int, int] = (70, 70, 70)
-    frame_color: Tuple[int, int, int] = (255, 255, 255)
-    frame_thickness: int = 5
-    invert: bool = False
-    random_style_gradient: bool = False
-    random_style_frame: bool = False
-    
-    background_image: Optional[str] = None
-
-@lru_cache(maxsize=64)
-def _cached_gradient(w: int, h: int,
-                     c1: tuple[int, int, int],
-                     c2: tuple[int, int, int]) -> Image.Image:
-    
-    mask = Image.linear_gradient('L').resize((1, h))
-    
-    r = Image.eval(mask, lambda t: int(c1[0] + (c2[0] - c1[0]) * t / 255))
-    g = Image.eval(mask, lambda t: int(c1[1] + (c2[1] - c1[1]) * t / 255))
-    b = Image.eval(mask, lambda t: int(c1[2] + (c2[2] - c1[2]) * t / 255))
-    
-    grad = Image.merge('RGB', (r, g, b))
-    return grad.resize((w, h), Image.Resampling.BILINEAR)
-
-
-def make_background(rs: RenderSettings, page_index: int = 0) -> Image.Image:
-    w, h = rs.page_w, rs.page_h
-    grad_start, grad_end = rs.grad_start, rs.grad_end
-    frame_color = rs.frame_color
-    
-    # --- random styles ---
-    if rs.random_style_gradient:
-        rng = random.Random(100000 + page_index)
-        grad_start = (
-            rng.randrange(256),
-            rng.randrange(256),
-            rng.randrange(256),
-        )
-        grad_end = (
-            rng.randrange(256),
-            rng.randrange(256),
-            rng.randrange(256),
-        )
-    
-    if rs.random_style_frame:
-        rng = random.Random(200000 + page_index)
-        frame_color = (
-            rng.randrange(256),
-            rng.randrange(256),
-            rng.randrange(256),
-        )
-    
-    # --- background base ---
-    if rs.background_image:
-        try:
-            base = (
-                Image.open(rs.background_image)
-                .convert('RGB')
-                .resize((w, h), Image.Resampling.LANCZOS)
-            )
-        except Exception:
-            base = Image.new('RGB', (w, h), rs.bg_color)
-    
-    elif rs.background_mode == 'solid':
-        base = Image.new('RGB', (w, h), rs.bg_color)
-    
-    elif rs.background_mode == 'gradient':
-        base = _cached_gradient(
-            w, h,
-            grad_start,
-            grad_end
-        ).copy()
-    
-    else:
-        # fallback
-        base = Image.new('RGB', (w, h), rs.bg_color)
-    
-    # --- frame ---
-    if rs.background_mode == 'frame':
-        draw = ImageDraw.Draw(base)
-        t = clamp(rs.frame_thickness, 1, 50)
-        for i in range(t):
-            draw.rectangle(
-                [i, i, w - 1 - i, h - 1 - i],
-                outline=frame_color
-            )
-    
-    # --- invert ---
-    if rs.invert:
-        base = ImageOps.invert(base)
-    
-    return base
-
-def split_text_to_lines(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, max_width: int, rs: RenderSettings) -> List[str]:
-    text = text.replace('\r\n', '\n').replace('\r', '\n')
-    lines_out = []
-    for raw_line in text.split('\n'):
-        if raw_line == '':
-            lines_out.append('')
-            continue
-        if not rs.word_wrap:
-            buf = ''
-            for ch in raw_line:
-                cand = buf + ch
-                # w = draw.textlength(cand, font=font)
-                w = get_w(cand, draw, font)
-                if w <= max_width or buf == '':
-                    buf = cand
-                else:
-                    lines_out.append(buf)
-                    buf = ch
-            if buf:
-                lines_out.append(buf)
-            continue
-        
-        words = re.split(r'(\s+)', raw_line)
-        cur = ''
-        for tok in words:
-            cand = cur + tok
-            # w = draw.textlength(cand, font=font)
-            w = get_w(cand, draw, font)
-            if w <= max_width or cur == '':
-                cur = cand
-            else:
-                lines_out.append(cur.rstrip('\n'))
-                cur = tok.lstrip()
-        if cur != '':
-            lines_out.append(cur.rstrip('\n'))
-    return lines_out
-
-def render_text_to_pages(text: str, rs: RenderSettings, start_page_index: int = 0) -> List[Image.Image]:
-    PAGEBREAK_TOKEN = '<<PAGEBREAK>>'
-    INLINE_PB = '@pb@'
-    font = load_font(rs.font_path, rs.font_size)
-    
-    parts: List[str] = []
-    for line in text.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
-        if INLINE_PB in line:
-            segs = line.split(INLINE_PB)
-            for i, seg in enumerate(segs):
-                if seg != '': parts.append(seg)
-                if i != len(segs) - 1: parts.append('\n'+PAGEBREAK_TOKEN+'\n')
-        else:
-            parts.append(line)
-        parts.append('\n')
-    norm = ''.join(parts)
-    
-    max_text_w = rs.page_w - rs.margin_left - rs.margin_right
-    max_text_h = rs.page_h - rs.margin_top - rs.margin_bottom
-    ascent, descent = font.getmetrics()
-    base_line_h = ascent + descent + rs.line_spacing
-    
-    pages = []
-    cur_page_index = start_page_index
-    cur_img = make_background(rs, page_index=cur_page_index)
-    draw = ImageDraw.Draw(cur_img)
-    x0 = rs.margin_left
-    y = rs.margin_top
-    
-    def new_page():
-        nonlocal cur_img, draw, y, cur_page_index
-        pages.append(cur_img)
-        cur_page_index += 1
-        cur_img = make_background(rs, page_index=cur_page_index)
-        draw = ImageDraw.Draw(cur_img)
-        y = rs.margin_top
-    
-    chunks = norm.split('\n')
-    for raw in chunks:
-        if raw == PAGEBREAK_TOKEN:
-            new_page()
-            continue
-        if raw == '':
-            y += base_line_h
-            if y + base_line_h > rs.margin_top + max_text_h:
-                new_page()
-            continue
-        
-        wrapped = split_text_to_lines(raw, draw, font, max_text_w - rs.indent_first_line, rs)
-        for li, line in enumerate(wrapped):
-            if line == '' and li == 0:
-                y += base_line_h
-                continue
-            indent = rs.indent_first_line if li == 0 else 0
-            draw.text((x0 + indent, y), line, font=font, fill=rs.font_color)
-            y += base_line_h
-            if y + base_line_h > rs.margin_top + max_text_h:
-                new_page()
-    pages.append(cur_img)
-    return pages
-
-def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = False, page_index: int = 0) -> Image.Image:
-    base = make_background(rs, page_index=page_index)
-    
-    try:
-        img = Image.open(img_path).convert('RGBA')
-    except Exception:
-        draw = ImageDraw.Draw(base)
-        draw.text((10, 10), f'Failed to open:\n{img_path.name}', fill=(255, 0, 0))
-        return base
-    
-    img.thumbnail(
-        (rs.page_w, rs.page_h),
-        Image.Resampling.LANCZOS
-    )
-    
-    bw, bh = rs.page_w, rs.page_h
-    iw, ih = img.size
-    
-    x = (bw - iw) // 2
-    y = (bh - ih) // 2
-    
-    if not for_file:
-        base_rgba = base.convert('RGBA')
-        base_rgba.alpha_composite(img, (x, y))
-        return base_rgba.convert('RGB')
-    else:
-        return img
 
 # ---------------------------
 # UI: Main Application
@@ -285,7 +61,7 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
 class MainFrame(wx.Frame):
     def __init__(self):
         super().__init__(None, title=APP_NAME, size=(1000, 680))
-        self.SetMinSize((950, 600))
+        self.SetMinSize((1000, 680))
         
         self.panel = wx.Panel(self)
         
@@ -294,89 +70,90 @@ class MainFrame(wx.Frame):
         
         self.base_dir = Path.cwd()
         self.temp_dir = self.base_dir / '_tmp_pages'
-        self.output_dir = self.base_dir / 'output'
-        ensure_dir(self.output_dir)
         
         self.inputs: List[Path] = []
         self.preview_pages: List[Path] = []
         self.preview_index = 0
         self.preview_bitmap = None
         self.cfg = configparser.ConfigParser()
-
-        self._load_config()
+        
+        font = wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        self.SetFont(font)
         self._init_ui()
+        
+        self._load_config()
         self._apply_config_to_widgets()
+        
         self.font_resolver = FontResolver()
         self._ensure_default_font()
         
         self.Center()
     
     def _init_ui(self):
-        main_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        main_win = wx.BoxSizer(wx.HORIZONTAL)
         
         # --- LEFT PANEL: Files ---
-        left_sizer = wx.BoxSizer(wx.VERTICAL)
-        lbl_files = wx.StaticText(self.panel, label='Files / Folders')
-        lbl_files.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        left_sizer.Add(lbl_files, 0, wx.ALL, 5)
+        left_panel = wx.BoxSizer(wx.VERTICAL)
+        
+        lbl_files = wx.StaticText(self.panel, label='FILES / FOLDERS')
+        lbl_files.SetFont(lbl_files.GetFont().Bold())
+        left_panel.Add(lbl_files, 0, wx.ALL, 5)
         
         self.lst_files = wx.ListBox(self.panel, style=wx.LB_EXTENDED | wx.LB_HSCROLL)
-        self.lst_files.SetMinSize((250, -1))
         self.lst_files.Bind(wx.EVT_LISTBOX_DCLICK, lambda e: self.on_preview_selected())
-        left_sizer.Add(self.lst_files, 1, wx.EXPAND | wx.ALL, 5)
+        left_panel.Add(self.lst_files, 1, wx.EXPAND | wx.BOTTOM, 5)
         
         # File Buttons
-        btn_sizer1 = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_add_files = wx.Button(self.panel, label='Add Files')
+        btn_leftbox1 = wx.BoxSizer(wx.HORIZONTAL)
+        btn_leftbox2 = wx.BoxSizer(wx.HORIZONTAL)
+        
+        self.btn_add_files  = wx.Button(self.panel, label='Add Files')
         self.btn_add_folder = wx.Button(self.panel, label='Add Folder')
-        self.btn_remove = wx.Button(self.panel, label='Remove')
+        self.btn_remove     = wx.Button(self.panel, label='Remove')
         
-        btn_sizer1.Add(self.btn_add_files, 1, wx.RIGHT, 2)
-        btn_sizer1.Add(self.btn_add_folder, 1, wx.RIGHT, 2)
-        btn_sizer1.Add(self.btn_remove, 1, wx.LEFT, 2)
-        left_sizer.Add(btn_sizer1, 0, wx.EXPAND | wx.ALL, 5)
-        
-        btn_sizer2 = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_up = wx.Button(self.panel, label='Up')
-        self.btn_down = wx.Button(self.panel, label='Down')
+        self.btn_up    = wx.Button(self.panel, label='Up')
+        self.btn_down  = wx.Button(self.panel, label='Down')
         self.btn_clear = wx.Button(self.panel, label='Clear')
         
-        btn_sizer2.Add(self.btn_up, 1, wx.RIGHT, 2)
-        btn_sizer2.Add(self.btn_down, 1, wx.RIGHT, 2)
-        btn_sizer2.Add(self.btn_clear, 1, wx.LEFT, 2)
-        left_sizer.Add(btn_sizer2, 0, wx.EXPAND | wx.ALL, 5)
+        btn_leftbox1.Add(self.btn_add_files,  1, wx.RIGHT, 5)
+        btn_leftbox1.Add(self.btn_add_folder, 1, wx.RIGHT, 5)
+        btn_leftbox1.Add(self.btn_remove,     1)
+        
+        btn_leftbox2.Add(self.btn_up,    1, wx.RIGHT, 5)
+        btn_leftbox2.Add(self.btn_down,  1, wx.RIGHT, 5)
+        btn_leftbox2.Add(self.btn_clear, 1)
+        
+        left_panel.Add(btn_leftbox1, 0, wx.EXPAND | wx.BOTTOM, 5)
+        left_panel.Add(btn_leftbox2, 0, wx.EXPAND)
         
         # Bindings
-        self.Bind(wx.EVT_BUTTON, self.on_add_files, self.btn_add_files)
-        self.Bind(wx.EVT_BUTTON, self.on_add_folder, self.btn_add_folder)
-        self.Bind(wx.EVT_BUTTON, self.on_remove, self.btn_remove)
+        self.Bind(wx.EVT_BUTTON, self.on_add_files,          self.btn_add_files)
+        self.Bind(wx.EVT_BUTTON, self.on_add_folder,         self.btn_add_folder)
+        self.Bind(wx.EVT_BUTTON, self.on_remove,             self.btn_remove)
         self.Bind(wx.EVT_BUTTON, lambda e: self.on_move(-1), self.btn_up)
-        self.Bind(wx.EVT_BUTTON, lambda e: self.on_move(1), self.btn_down)
-        self.Bind(wx.EVT_BUTTON, self.on_clear, self.btn_clear)
+        self.Bind(wx.EVT_BUTTON, lambda e: self.on_move(1),  self.btn_down)
+        self.Bind(wx.EVT_BUTTON, self.on_clear,              self.btn_clear)
         
-        main_sizer.Add(left_sizer, 1, wx.EXPAND | wx.ALL, 10)
+        main_win.Add(left_panel, 1, wx.EXPAND | wx.TOP | wx.LEFT | wx.BOTTOM, 10)
         
         # --- RIGHT PANEL: Settings ---
-        right_sizer = wx.BoxSizer(wx.VERTICAL)
+        right_panel = wx.BoxSizer(wx.VERTICAL)
+        right_panel.SetMinSize((540, -1))
         
         # --- Preview Panel ---
         self.preview_panel = wx.Panel(self.panel)
         self.preview_panel.SetBackgroundColour(wx.BLACK)
-        
         self.preview_canvas = wx.StaticBitmap(self.preview_panel)
         
         pv_inner = wx.BoxSizer(wx.VERTICAL)
         pv_inner.AddStretchSpacer()
         pv_inner.Add(self.preview_canvas, 0, wx.ALIGN_CENTER)
         pv_inner.AddStretchSpacer()
-        
         pv_sizer = wx.BoxSizer(wx.VERTICAL)
         pv_sizer.Add(pv_inner, 1, wx.EXPAND)
-        
         self.preview_panel.SetSizer(pv_sizer)
         
-        right_sizer.Add(self.preview_panel, 1, wx.EXPAND | wx.ALL, 5)
-        
+        right_panel.Add(self.preview_panel, 1, wx.EXPAND | wx.ALL, 5)
         self.preview_panel.Bind(wx.EVT_SIZE, self._on_preview_resize)
         
         # Prev/Next
@@ -385,184 +162,190 @@ class MainFrame(wx.Frame):
         self.btn_prev = wx.Button(self.panel, label='◀')
         self.btn_next = wx.Button(self.panel, label='▶')
         
-        self.st_page = wx.StaticText(self.panel, label='EMPTY')
+        self.st_page = wx.StaticText(self.panel, label='EMPTY', style=wx.ALIGN_CENTER)
         
-        nav_sizer.Add(self.btn_prev, 0, wx.RIGHT, 5)
-        nav_sizer.Add(self.st_page, 1, wx.ALIGN_CENTER)
-        nav_sizer.Add(self.btn_next, 0, wx.LEFT, 5)
+        nav_sizer.Add(self.btn_prev, 0, wx.LEFT | wx.RIGHT, 5)
+        nav_sizer.Add(self.st_page, 1, wx.ALIGN_CENTER_VERTICAL)
+        nav_sizer.Add(self.btn_next, 0, wx.LEFT | wx.RIGHT, 5)
         
-        right_sizer.Add(nav_sizer, 0, wx.EXPAND | wx.BOTTOM, 5)
+        right_panel.Add(nav_sizer, 0, wx.EXPAND)
         
         self.btn_prev.Bind(wx.EVT_BUTTON, lambda e: self._preview_step(-1))
-        self.btn_next.Bind(wx.EVT_BUTTON, lambda e: self._preview_step(1))
+        self.btn_next.Bind(wx.EVT_BUTTON, lambda e: self._preview_step(+1))
         
         # General Options
-        sb_opts = wx.StaticBoxSizer(wx.VERTICAL, self.panel, 'General Options')
+        opts_block_gen = wx.StaticBoxSizer(wx.VERTICAL, self.panel, 'General Options')
         
-        # Row 1:
         row1 = wx.BoxSizer(wx.HORIZONTAL)
-        row1.Add(wx.StaticText(self.panel, label='DOCUMENT.DAT TYPE:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row2 = wx.BoxSizer(wx.HORIZONTAL)
+        row3 = wx.BoxSizer(wx.HORIZONTAL)
         
-        self.doc_type = wx.Choice(self.panel, choices=['PS1 on PSP/PS3', 'PSP & PS minis'])
+        # Row 1: Format and KEYS
+        st_format = wx.StaticText(self.panel, label='FORMAT:')
+        self.doc_type     = wx.Choice(self.panel, choices=['PS1 on PSP/PS3', 'PSP & PS minis'])
+        self.btn_keysbin  = wx.Button(self.panel, label='KEYS.BIN (?)')
+        self.btn_keyreset = wx.Button(self.panel, label='RESET KEY')
         
-        row1.Add(self.doc_type, 0, wx.RIGHT, 10)
+        row1.Add(st_format,         0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row1.Add(self.doc_type,     0, wx.RIGHT, 10)
+        row1.Add(self.btn_keysbin,  0, wx.RIGHT, 5)
+        row1.Add(self.btn_keyreset, 0, wx.RIGHT, 5)
+        
         self.doc_type.Bind(wx.EVT_CHOICE, self._on_doc_type_change)
+        self.btn_keysbin.Bind(wx.EVT_BUTTON, self._open_keysbin)
+        self.btn_keyreset.Bind(wx.EVT_BUTTON, self._reset_keysbin)
         
         self.doc_type.SetToolTip(
             'Manual Format:\n'
             '• PS1 Game (EBOOT.BIN)\n'
-            '• PSP / PS Mini'
+            '• PSP / PS Minis'
         )
-        
-        self.btn_keysbin = wx.Button(self.panel, label='KEYS.BIN')
-        row1.Add(self.btn_keysbin, 0, wx.RIGHT, 5)
-        self.btn_keysbin.Bind(wx.EVT_BUTTON, self._open_keysbin)
         
         self.btn_keysbin.SetToolTip(
             'Open KEYS.BIN, required for official PS1 Manuals\n'
             '• Must be exactly 16 bytes\n'
             '• Binary format\n'
-            '• No padding'
+            '• No padding\n\n'
+            'Current KEY:\n'
+            f'{bytes(0x10).hex(' ').upper()}'
         )
         
-        self.st_keytxt = wx.StaticText(self.panel, label=bytes(0x10).hex().upper())
-        row1.Add(self.st_keytxt, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        
-        self.btn_keyreset = wx.Button(self.panel, label='RESET KEY')
-        row1.Add(self.btn_keyreset, 0, wx.RIGHT, 5)
-        self.btn_keyreset.Bind(wx.EVT_BUTTON, self._reset_keysbin)
-        
-        sb_opts.Add(row1, 0, wx.EXPAND | wx.ALL, 5)
-        
         # Row 2: Size, Wrap, Merge, Keep
-        row2 = wx.BoxSizer(wx.HORIZONTAL)
-        row2.Add(wx.StaticText(self.panel, label='Size:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.ch_size = wx.Choice(self.panel, choices=['480x248', '480x272', '480x480', '480x960'])
-        row2.Add(self.ch_size, 0, wx.RIGHT, 15)
+        st_size = wx.StaticText(self.panel, label='Size:')
+        self.ch_size   = wx.Choice(self.panel, choices=['480x248', '480x272', '480x480', '480x960'])
+        self.chk_wrap  = wx.CheckBox(self.panel, label='Word Wrap')
+        self.chk_merge = wx.CheckBox(self.panel, label='Merge all to one')
+        self.chk_keep  = wx.CheckBox(self.panel, label='Keep temp PNGs')
         
-        self.chk_wrap = wx.CheckBox(self.panel, label='Word Wrap')
-        row2.Add(self.chk_wrap, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 15)
+        row2.Add(st_size,        0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row2.Add(self.ch_size,   0, wx.RIGHT, 15)
+        row2.Add(self.chk_wrap,  0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+        row2.Add(self.chk_merge, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
+        row2.Add(self.chk_keep,  0, wx.ALIGN_CENTER_VERTICAL)
         
         self.chk_wrap.SetToolTip(
             'Lines are wrapped across the screen by words\n'
             'Unchecked this if you have a specially prepared text file'
         )
         
-        self.chk_merge = wx.CheckBox(self.panel, label='Merge all to one')
-        row2.Add(self.chk_merge, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 15)
-        
         self.chk_merge.SetToolTip(
             'If checked: All files from the list are converted into one project.\n'
             'Otherwise only selected file(s) in the list will be converted'
         )
         
-        self.chk_keep = wx.CheckBox(self.panel, label='Keep temp PNGs')
-        row2.Add(self.chk_keep, 0, wx.ALIGN_CENTER_VERTICAL)
-        
-        self.chk_keep.SetToolTip('Do not delete _tmp_pages folder after DOCUMENT.DAT creation')
-        
-        sb_opts.Add(row2, 0, wx.EXPAND | wx.ALL, 5)
+        self.chk_keep.SetToolTip(
+            'Do not delete _tmp_pages folder after DOCUMENT.DAT creation'
+        )
         
         # Row 3: Font Controls
-        row3 = wx.BoxSizer(wx.HORIZONTAL)
-        row3.Add(wx.StaticText(self.panel, label='Font Size:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.spn_font_size = wx.SpinCtrl(self.panel, min=8, max=72)
-        row3.Add(self.spn_font_size, 0, wx.RIGHT, 10)
-        
-        self.btn_font_path = wx.Button(self.panel, label='Select Font...')
-        self.btn_font_path.Bind(wx.EVT_BUTTON, self.on_pick_font)
-        row3.Add(self.btn_font_path, 0, wx.RIGHT, 10)
-        
+        st_font_size        = wx.StaticText(self.panel, label='Font Size:')
+        self.spn_font_size  = wx.SpinCtrl(self.panel, min=8, max=72)
+        self.btn_font_path  = wx.Button(self.panel, label='Select Font...')
         self.btn_font_color = wx.Button(self.panel, label='Font Color')
+        st_indent           = wx.StaticText(self.panel, label='Indent:')
+        self.spn_indent     = wx.SpinCtrl(self.panel, min=0, max=100)
+        
+        row3.Add(st_font_size,        0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row3.Add(self.spn_font_size,  0, wx.RIGHT, 10)
+        row3.Add(self.btn_font_path,  0, wx.RIGHT, 10)
+        row3.Add(self.btn_font_color, 0, wx.RIGHT, 15)
+        row3.Add(st_indent,           0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row3.Add(self.spn_indent,     0)
+        
+        self.btn_font_path.Bind(wx.EVT_BUTTON, self.on_pick_font)
         self.btn_font_color.Bind(wx.EVT_BUTTON, self.on_pick_font_color)
-        row3.Add(self.btn_font_color, 0, wx.RIGHT, 20)
         
-        row3.Add(wx.StaticText(self.panel, label='Indent:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        self.spn_indent = wx.SpinCtrl(self.panel, min=0, max=100)
-        row3.Add(self.spn_indent, 0)
-        sb_opts.Add(row3, 0, wx.EXPAND | wx.ALL, 5)
+        # add rows
+        opts_block_gen.Add(row1, 0, wx.EXPAND | wx.ALL, 5)
+        opts_block_gen.Add(row2, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        opts_block_gen.Add(row3, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         
-        right_sizer.Add(sb_opts, 0, wx.EXPAND | wx.ALL, 5)
+        # add block
+        right_panel.Add(opts_block_gen, 0, wx.EXPAND | wx.ALL, 5)
         
         # Background Options
-        sb_bg = wx.StaticBoxSizer(wx.VERTICAL, self.panel, 'Background Settings')
+        opts_block_bg = wx.StaticBoxSizer(wx.VERTICAL, self.panel, 'Background Settings')
         
-        # Row 3: Mode and Flags
-        row3 = wx.BoxSizer(wx.HORIZONTAL)
-        row3.Add(wx.StaticText(self.panel, label='Mode:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        
-        self.ch_bg_mode = wx.Choice(self.panel, choices=['solid', 'gradient', 'frame'])
-        row3.Add(self.ch_bg_mode, 0, wx.RIGHT, 10)
-        
-        self.chk_invert = wx.CheckBox(self.panel, label='Invert Colors')
-        row3.Add(self.chk_invert, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
-        self.chk_rand_grad = wx.CheckBox(self.panel, label='Rnd Gradient')
-        row3.Add(self.chk_rand_grad, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
-        self.chk_rand_frame = wx.CheckBox(self.panel, label='Rnd Frame')
-        row3.Add(self.chk_rand_frame, 0, wx.ALIGN_CENTER_VERTICAL)
-        sb_bg.Add(row3, 0, wx.EXPAND | wx.ALL, 5)
-        
-        # Row 4: Color Pickers
         row4 = wx.BoxSizer(wx.HORIZONTAL)
+        row5 = wx.BoxSizer(wx.HORIZONTAL)
+        row6 = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # Row 4: Mode and Flags
+        st_mode         = wx.StaticText(self.panel, label='Mode:')
+        self.ch_bg_mode = wx.Choice(self.panel, choices=['solid', 'gradient', 'frame'])
+        self.chk_invert = wx.CheckBox(self.panel, label='Invert Colors')
+        self.chk_rand_grad = wx.CheckBox(self.panel, label='Rnd Gradient')
+        self.chk_rand_frame = wx.CheckBox(self.panel, label='Rnd Frame')
+        
+        row4.Add(st_mode,             0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row4.Add(self.ch_bg_mode,     0, wx.RIGHT, 15)
+        row4.Add(self.chk_invert,     0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row4.Add(self.chk_rand_grad,  0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row4.Add(self.chk_rand_frame, 0, wx.ALIGN_CENTER_VERTICAL)
+        
+        # Row 5: Color Pickers
         self.btn_bg_solid = wx.Button(self.panel, label='Solid Color')
         self.btn_bg_start = wx.Button(self.panel, label='Grad Start')
-        self.btn_bg_end = wx.Button(self.panel, label='Grad End')
+        self.btn_bg_end   = wx.Button(self.panel, label='Grad End')
         self.btn_bg_frame = wx.Button(self.panel, label='Frame Color')
         
         for btn in (self.btn_bg_solid, self.btn_bg_start, self.btn_bg_end, self.btn_bg_frame):
-            row4.Add(btn, 1, wx.RIGHT, 5)
+            row5.Add(btn, 1, wx.RIGHT, 5)
         
         self.btn_bg_solid.Bind(wx.EVT_BUTTON, self.on_pick_bg_color)
         self.btn_bg_start.Bind(wx.EVT_BUTTON, lambda e: self.on_pick_grad('start'))
         self.btn_bg_end.Bind(wx.EVT_BUTTON, lambda e: self.on_pick_grad('end'))
         self.btn_bg_frame.Bind(wx.EVT_BUTTON, self.on_pick_frame_color)
-        sb_bg.Add(row4, 0, wx.EXPAND | wx.ALL, 5)
         
-        # Row 5: Frame Thickness and Image
-        row5 = wx.BoxSizer(wx.HORIZONTAL)
-        row5.Add(wx.StaticText(self.panel, label='Frame Thickness:'), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        # Row 6: Frame Thickness and Image
+        st_frame_fickness = wx.StaticText(self.panel, label='Frame Thickness:')
         self.spn_frame_thick = wx.SpinCtrl(self.panel, min=1, max=50)
-        row5.Add(self.spn_frame_thick, 0, wx.RIGHT, 5)
-        
         self.btn_bg_img = wx.Button(self.panel, label='BG Image...')
-        self.btn_bg_img.Bind(wx.EVT_BUTTON, self.on_pick_bg_image)
-        row5.Add(self.btn_bg_img, 0, wx.RIGHT, 5)
-        
         self.btn_clr_bg_img = wx.Button(self.panel, label='Clear BG Img')
-        self.btn_clr_bg_img.Bind(wx.EVT_BUTTON, self.on_clear_bg_image)
-        row5.Add(self.btn_clr_bg_img, 0)
         
-        sb_bg.Add(row5, 0, wx.EXPAND | wx.ALL, 5)
-        right_sizer.Add(sb_bg, 0, wx.EXPAND | wx.ALL, 5)
+        row6.Add(st_frame_fickness,    0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row6.Add(self.spn_frame_thick, 0, wx.RIGHT, 5)
+        row6.Add(self.btn_bg_img,      0, wx.RIGHT, 5)
+        row6.Add(self.btn_clr_bg_img,  0)
+        
+        self.btn_bg_img.Bind(wx.EVT_BUTTON, self.on_pick_bg_image)
+        self.btn_clr_bg_img.Bind(wx.EVT_BUTTON, self.on_clear_bg_image)
+        
+        opts_block_bg.Add(row4, 0, wx.EXPAND | wx.ALL, 5)
+        opts_block_bg.Add(row5, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        opts_block_bg.Add(row6, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        
+        right_panel.Add(opts_block_bg, 0, wx.EXPAND | wx.ALL, 5)
         
         # Action Buttons
-        act_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_preview = wx.Button(self.panel, label='Preview')
-        self.btn_create = wx.Button(self.panel, label='Create .DAT')
-        self.btn_extract = wx.Button(self.panel, label='Extract from .DAT')
+        row7 = wx.BoxSizer(wx.HORIZONTAL)
+        
+        self.btn_preview  = wx.Button(self.panel, label='Preview')
+        self.btn_create   = wx.Button(self.panel, label='Create .DAT')
+        self.btn_extract  = wx.Button(self.panel, label='Extract from .DAT')
         self.btn_save_cfg = wx.Button(self.panel, label='Save Settings')
         
-        act_sizer.Add(self.btn_preview, 1, wx.RIGHT, 5)
-        act_sizer.Add(self.btn_create, 1, wx.RIGHT, 5)
-        act_sizer.Add(self.btn_extract, 1, wx.RIGHT, 5)
-        act_sizer.Add(self.btn_save_cfg, 1)
+        row7.Add(self.btn_preview,  1, wx.RIGHT, 5)
+        row7.Add(self.btn_create,   1, wx.RIGHT, 5)
+        row7.Add(self.btn_extract,  1, wx.RIGHT, 5)
+        row7.Add(self.btn_save_cfg, 1)
+        
+        right_panel.Add(row7, 0, wx.EXPAND | wx.ALL, 5)
         
         self.btn_preview.Bind(wx.EVT_BUTTON, self.on_preview_all)
         self.btn_create.Bind(wx.EVT_BUTTON, self.on_create_dat)
         self.btn_extract.Bind(wx.EVT_BUTTON, self.on_extract_dat)
         self.btn_save_cfg.Bind(wx.EVT_BUTTON, self.on_save_settings)
         
-        right_sizer.Add(act_sizer, 0, wx.EXPAND | wx.ALL, 5)
-        
         # Progress and Status
         self.gauge = wx.Gauge(self.panel, range=100)
-        right_sizer.Add(self.gauge, 0, wx.EXPAND | wx.ALL, 5)
+        right_panel.Add(self.gauge, 0, wx.EXPAND | wx.ALL, 5)
         
         self.st_status = wx.StaticText(self.panel, label='Ready')
-        right_sizer.Add(self.st_status, 0, wx.ALL, 5)
+        right_panel.Add(self.st_status, 0, wx.ALL, 5)
         
-        main_sizer.Add(right_sizer, 2, wx.EXPAND | wx.ALL, 5)
-        self.panel.SetSizer(main_sizer)
+        main_win.Add(right_panel, 1, wx.EXPAND | wx.ALL, 5)
+        self.panel.SetSizer(main_win)
     
     # ---------------------------
     # Config Logic
@@ -678,12 +461,10 @@ class MainFrame(wx.Frame):
         
         if value == 1:
             self.btn_keysbin.Hide()
-            self.st_keytxt.Hide()
             self.btn_keyreset.Hide()
         
         if value == 0:
             self.btn_keysbin.Show()
-            self.st_keytxt.Show()
             self.btn_keyreset.Show()
     
     # ---------------------------
@@ -720,24 +501,28 @@ class MainFrame(wx.Frame):
             
             self.key_bytes = data
             
-            hex_key = data
+            tt = self.btn_keysbin.GetToolTipText().splitlines()
+            tt[-1] = data.hex(' ').upper()
+            self.btn_keysbin.SetToolTip('\n'.join(tt))
+            
             wx.MessageBox(
-                f'Key loaded successfully:\n{hex_key.hex(' ').upper()}',
+                f'Key loaded successfully:\n{data.hex(' ').upper()}',
                 'Key OK',
                 wx.OK | wx.ICON_INFORMATION
             )
-            
-            self.st_keytxt.SetLabel(hex_key.hex().upper())
     
     def _reset_keysbin(self, e):
+        self.key_bytes = bytes(0x10)
+        
+        tt = self.btn_keysbin.GetToolTipText().splitlines()
+        tt[-1] = bytes(0x10).hex(' ').upper()
+        self.btn_keysbin.SetToolTip('\n'.join(tt))
+        
         wx.MessageBox(
             f'Key was reset to:\n{bytes(0x10).hex(' ').upper()}',
             'Key Reset OK',
             wx.OK | wx.ICON_INFORMATION
         )
-        
-        self.key_bytes = bytes(0x10)
-        self.st_keytxt.SetLabel(bytes(0x10).hex().upper())
     
     def _refresh_list(self):
         self.lst_files.Clear()
