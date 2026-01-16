@@ -1,4 +1,4 @@
-# PSPDocMakerGUI
+# PSP DocMaker NX (GUI)
 
 An easy-to-use graphical tool for creating properly formatted DOCUMENT.DAT (manual) files for PS1, PSP, and PS Minis games.
 
