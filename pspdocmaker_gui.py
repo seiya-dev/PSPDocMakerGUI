@@ -555,7 +555,6 @@ class MainFrame(wx.Frame):
                     out_dir = dats[di].with_suffix('')
                     extracted = extract_pngs_from_dat(dats[di], out_dir)
                     if extracted:
-                        print(extracted)
                         self.inputs.extend(extracted)
                     else:
                         wx.MessageBox(f'No PNGs found in\n{dats[di].name}', 'Warning', wx.ICON_WARNING)
