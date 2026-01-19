@@ -275,8 +275,8 @@ def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
             
             if len(subheader_out) > 0:
                 for j in range(enc_chunks):
-                    enc_chunk_offset = int.from_bytes(subheader_out[j * 0x08 + 0x00:j * 0x08 + 0x04])
-                    enc_chunk_size   = int.from_bytes(subheader_out[j * 0x08 + 0x04:j * 0x08 + 0x08])
+                    enc_chunk_offset = int.from_bytes(subheader_out[j * 0x08 + 0x00:j * 0x08 + 0x04], 'little')
+                    enc_chunk_size   = int.from_bytes(subheader_out[j * 0x08 + 0x04:j * 0x08 + 0x08], 'little')
                     
                     dec_chunk = desDecrypt(doc_type, page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size])
                     page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size] = dec_chunk
