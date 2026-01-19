@@ -548,14 +548,18 @@ class MainFrame(wx.Frame):
     def _process_added_paths(self, paths: List[Path]):
         dats = [p for p in paths if is_dat_file(p)]
         if dats:
-            dlg = wx.MessageDialog(self, 'DAT file detected. Extract PNGs now?', 'DAT Detected', wx.YES_NO | wx.ICON_QUESTION)
+            dlg = wx.MessageDialog(self, 'DAT file(s) detected. Extract PNGs?', 'DAT Detected', wx.YES_NO | wx.ICON_QUESTION)
             if dlg.ShowModal() == wx.ID_YES:
-                out_dir = self.base_dir / 'extracted_png'
-                extracted = extract_pngs_from_dat(dats[0], out_dir)
-                if extracted:
-                    self.inputs.extend(extracted)
-                else:
-                    wx.MessageBox('No PNGs found in DAT.', 'Warning', wx.ICON_WARNING)
+                self._set_ui_busy(True)
+                for di in range(len(dats)):
+                    out_dir = dats[di].with_suffix('')
+                    extracted = extract_pngs_from_dat(dats[di], out_dir)
+                    if extracted:
+                        print(extracted)
+                        self.inputs.extend(extracted)
+                    else:
+                        wx.MessageBox(f'No PNGs found in\n{dats[di].name}', 'Warning', wx.ICON_WARNING)
+                self._set_ui_busy(False)
             paths = [p for p in paths if not is_dat_file(p)]
         
         for p in paths:
