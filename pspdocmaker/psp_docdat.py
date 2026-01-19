@@ -175,129 +175,132 @@ def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_di
     wx.MessageBox(f'Created:\n{out_dat}', 'Success', wx.OK | wx.ICON_INFORMATION)
 
 def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
-    pgd_header = b'\0PGD\1\0\0\0\1\0\0\0\0\0\0\0'
-    doc_header = b'DOC \0\0\1\0\0\0\1\0'
-    needle_buf = b'IEND\xAE\x42\x60\x82'
-    png_min_size = 0x43
-    
-    data = dat_path.read_bytes()
-    ensure_dir(out_dir)
-    out_files = []
-    idx = 0
-    
-    if data[0x00:0x0C] == doc_header:
-        for blob in iter_png_blobs_from_dat(data):
-            out = out_dir / f'DOC_{idx + 1:04d}.png'
-            out.write_bytes(blob)
-            out_files.append(out)
-            idx += 1
-        return out_files
+    try:
+        pgd_header = b'\0PGD\1\0\0\0\1\0\0\0\0\0\0\0'
+        doc_header = b'DOC \0\0\1\0\0\0\1\0'
+        needle_buf = b'IEND\xAE\x42\x60\x82'
+        png_min_size = 0x43
         
-    if data[0x00:0x10] == pgd_header:
-        ps1doc = desDecrypt(0, data[0x10:0x70])
-        pspdoc = desDecrypt(1, data[0x10:0x70])
-        doc_type = None
+        data = dat_path.read_bytes()
+        ensure_dir(out_dir)
+        out_files = []
+        idx = 0
         
-        match ps1doc[:0x0C], pspdoc[:0x0C]:
-            case (h, _) if h == doc_header:
-                doc_type = 0
-                doc_size_flag = int.from_bytes(ps1doc[0x1C:0x20], 'little')
-            case (_, h) if h == doc_header:
-                doc_type = 1
-                doc_size_flag = int.from_bytes(pspdoc[0x1C:0x20], 'little')
-            case _:
+        if data[0x00:0x0C] == doc_header:
+            for blob in iter_png_blobs_from_dat(data):
+                out = out_dir / f'DOC_{idx + 1:04d}.png'
+                out.write_bytes(blob)
+                out_files.append(out)
+                idx += 1
+            return out_files
+            
+        if data[0x00:0x10] == pgd_header:
+            ps1doc = desDecrypt(0, data[0x10:0x70])
+            pspdoc = desDecrypt(1, data[0x10:0x70])
+            doc_type = None
+            
+            match ps1doc[:0x0C], pspdoc[:0x0C]:
+                case (h, _) if h == doc_header:
+                    doc_type = 0
+                    doc_size_flag = int.from_bytes(ps1doc[0x1C:0x20], 'little')
+                case (_, h) if h == doc_header:
+                    doc_type = 1
+                    doc_size_flag = int.from_bytes(pspdoc[0x1C:0x20], 'little')
+                case _:
+                    return []
+            
+            if doc_size_flag not in (0, 1):
                 return []
+            
+            header_hash = makehash(doc_type, data[0x10:0x70])
+            if makehash(doc_type, data[0x10:0x70]) != data[0x80:0x90]:
+                return []
+            
+            doc_meta_offset = 0x00A0 if doc_type == 1 else 0x0090
+            doc_meta_size = 0x1F3E8 if doc_size_flag == 1 else 0x31E8
+            doc_meta_size += doc_meta_offset
+            
+            doc_meta = data[doc_meta_offset:doc_meta_size]
+            if makehash(doc_type, doc_meta) != data[doc_meta_size+0x10:doc_meta_size+0x20]:
+                return []
+            
+            doc_meta = desDecrypt(doc_type, doc_meta)
+            if doc_meta[:0x04] != (-1).to_bytes(4, 'big', signed = True):
+                return []
+            
+            page_count = int.from_bytes(doc_meta[0x04:0x08], 'little')
+            doc_meta = doc_meta[0x08:]
+            
+            if page_count > 99 and doc_size_flag < 1:
+                return []
+            
+            page_meta = []
+            for pi in range(page_count):
+                page_entry = doc_meta[pi * 0x80:(pi+1) * 0x80]
+                
+                p = {}
+                p['offset'] = int.from_bytes(page_entry[0x00:0x04], 'little')
+                p['size']   = int.from_bytes(page_entry[0x0C:0x10], 'little')
+                # p3_offset = int.from_bytes(page_entry[0x10:0x14], 'little')
+                # p3_size   = int.from_bytes(page_entry[0x1C:0x20], 'little')
+                page_meta.append(p)
+            
+            for pi in range(len(page_meta)):
+                ofs = page_meta[pi]['offset']
+                sz = page_meta[pi]['size']
+                
+                page_buf = data[ofs:ofs+sz]
+                hsz = 0x30 if doc_type == 1 else 0x20
+                
+                page_hash = page_buf[-hsz:]
+                page_buf = page_buf[:-hsz]
+                
+                if makehash(doc_type, page_buf) != page_hash[0x10:0x20]:
+                    continue
+                
+                page_info_head = desDecrypt(doc_type, page_buf[0x00:0x20])
+                page_size  = int.from_bytes(page_info_head[0x00:0x04], 'little')
+                enc_chunks = int.from_bytes(page_info_head[0x08:0x0C], 'little')
+                payload_offset = 0x20 + enc_chunks * 0x08
+                
+                if page_size != sz:
+                    continue
+                
+                if enc_chunks > 0:
+                    subheader_out = page_buf[0x20:0x20 + enc_chunks * 0x08]
+                    subheader_out = desDecrypt(doc_type, subheader_out)
+                
+                page_buf = bytearray(page_buf[payload_offset:])
+                if len(page_buf) < png_min_size:
+                    continue
+                
+                if len(subheader_out) > 0:
+                    for j in range(enc_chunks):
+                        enc_chunk_offset = int.from_bytes(subheader_out[j * 0x08 + 0x00:j * 0x08 + 0x04], 'little')
+                        enc_chunk_size   = int.from_bytes(subheader_out[j * 0x08 + 0x04:j * 0x08 + 0x08], 'little')
+                        
+                        dec_chunk = desDecrypt(doc_type, page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size])
+                        page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size] = dec_chunk
+                
+                needle_idx = page_buf.rfind(needle_buf)
+                if needle_idx == -1:
+                    continue
+                
+                png_size = needle_idx + len(needle_buf)
+                if png_size < png_min_size:
+                    continue
+                
+                page_buf = page_buf[:png_size]
+                out = out_dir / f'DOC_{idx + 1:04d}.png'
+                out.write_bytes(page_buf)
+                out_files.append(out)
+                idx += 1
+            
+            return out_files
         
-        if doc_size_flag not in (0, 1):
-            return []
-        
-        header_hash = makehash(doc_type, data[0x10:0x70])
-        if makehash(doc_type, data[0x10:0x70]) != data[0x80:0x90]:
-            return []
-        
-        doc_meta_offset = 0x00A0 if doc_type == 1 else 0x0090
-        doc_meta_size = 0x1F3E8 if doc_size_flag == 1 else 0x31E8
-        doc_meta_size += doc_meta_offset
-        
-        doc_meta = data[doc_meta_offset:doc_meta_size]
-        if makehash(doc_type, doc_meta) != data[doc_meta_size+0x10:doc_meta_size+0x20]:
-            return []
-        
-        doc_meta = desDecrypt(doc_type, doc_meta)
-        if doc_meta[:0x04] != (-1).to_bytes(4, 'big', signed = True):
-            return []
-        
-        page_count = int.from_bytes(doc_meta[0x04:0x08], 'little')
-        doc_meta = doc_meta[0x08:]
-        
-        if page_count > 99 and doc_size_flag < 1:
-            return []
-        
-        page_meta = []
-        for pi in range(page_count):
-            page_entry = doc_meta[pi * 0x80:(pi+1) * 0x80]
-            
-            p = {}
-            p['offset'] = int.from_bytes(page_entry[0x00:0x04], 'little')
-            p['size']   = int.from_bytes(page_entry[0x0C:0x10], 'little')
-            # p3_offset = int.from_bytes(page_entry[0x10:0x14], 'little')
-            # p3_size   = int.from_bytes(page_entry[0x1C:0x20], 'little')
-            page_meta.append(p)
-        
-        for pi in range(len(page_meta)):
-            ofs = page_meta[pi]['offset']
-            sz = page_meta[pi]['size']
-            
-            page_buf = data[ofs:ofs+sz]
-            hsz = 0x30 if doc_type == 1 else 0x20
-            
-            page_hash = page_buf[-hsz:]
-            page_buf = page_buf[:-hsz]
-            
-            if makehash(doc_type, page_buf) != page_hash[0x10:0x20]:
-                continue
-            
-            page_info_head = desDecrypt(doc_type, page_buf[0x00:0x20])
-            page_size  = int.from_bytes(page_info_head[0x00:0x04], 'little')
-            enc_chunks = int.from_bytes(page_info_head[0x08:0x0C], 'little')
-            payload_offset = 0x20 + enc_chunks * 0x08
-            
-            if page_size != sz:
-                continue
-            
-            if enc_chunks > 0:
-                subheader_out = page_buf[0x20:0x20 + enc_chunks * 0x08]
-                subheader_out = desDecrypt(doc_type, subheader_out)
-            
-            page_buf = bytearray(page_buf[payload_offset:])
-            if len(page_buf) < png_min_size:
-                continue
-            
-            if len(subheader_out) > 0:
-                for j in range(enc_chunks):
-                    enc_chunk_offset = int.from_bytes(subheader_out[j * 0x08 + 0x00:j * 0x08 + 0x04], 'little')
-                    enc_chunk_size   = int.from_bytes(subheader_out[j * 0x08 + 0x04:j * 0x08 + 0x08], 'little')
-                    
-                    dec_chunk = desDecrypt(doc_type, page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size])
-                    page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size] = dec_chunk
-            
-            needle_idx = page_buf.rfind(needle_buf)
-            if needle_idx == -1:
-                continue
-            
-            png_size = needle_idx + len(needle_buf)
-            if png_size < png_min_size:
-                continue
-            
-            page_buf = page_buf[:png_size]
-            out = out_dir / f'DOC_{idx + 1:04d}.png'
-            out.write_bytes(page_buf)
-            out_files.append(out)
-            idx += 1
-        
-        return out_files
-    
-    return []
+        return []
+    except:
+        return []
 
 def iter_png_blobs_from_dat(data: bytes) -> Iterable[bytes]:
     PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
