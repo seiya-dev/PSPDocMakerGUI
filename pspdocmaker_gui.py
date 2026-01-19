@@ -551,14 +551,17 @@ class MainFrame(wx.Frame):
             dlg = wx.MessageDialog(self, 'DAT file(s) detected. Extract PNGs?', 'DAT Detected', wx.YES_NO | wx.ICON_QUESTION)
             if dlg.ShowModal() == wx.ID_YES:
                 self._set_ui_busy(True)
+                no_png_dats = []
                 for di in range(len(dats)):
                     out_dir = dats[di].with_suffix('')
                     extracted = extract_pngs_from_dat(dats[di], out_dir)
                     if extracted:
                         self.inputs.extend(extracted)
                     else:
-                        wx.MessageBox(f'No PNGs found in\n{dats[di].name}', 'Warning', wx.ICON_WARNING)
+                        no_png_dats.append(dats[di].name)
                 self._set_ui_busy(False)
+                if no_png_dats:
+                    wx.MessageBox('No PNGs found in:\n\n' + '\n'.join(no_png_dats), 'Warning', wx.ICON_WARNING)
             paths = [p for p in paths if not is_dat_file(p)]
         
         for p in paths:
