@@ -960,7 +960,10 @@ class MainFrame(wx.Frame):
         try:
             self._update_status('Extracting...')
             files = extract_pngs_from_dat(dat_path, out_dir)
-            wx.MessageBox(f'Extracted {len(files)} images.', 'Success')
+            if len(files) > 0:
+                wx.MessageBox(f'Extracted {len(files)} images.', 'Success')
+            else:
+                wx.MessageBox(f'No PNGs found in:\n\n{dat_path}', 'Warning', wx.ICON_WARNING)
             self._update_status('Ready')
         except Exception as e:
             wx.MessageBox(str(e), 'Error')
