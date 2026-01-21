@@ -2,8 +2,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import List, Tuple, Optional, Iterable
 from pathlib import Path
+import re
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+from .font_resolver import load_font
+from .utils import get_w
 
 @dataclass
 class RenderSettings:

@@ -32,7 +32,7 @@ except ImportError as e:
 # User Modules
 # ---------------------------
 
-from pspdocmaker.font_resolver import FontResolver, load_font
+from pspdocmaker.font_resolver import FontResolver
 from pspdocmaker.psp_docdat import POPS_VER_KEY, extract_pngs_from_dat, pack_pngs_to_dat, iter_png_blobs_from_dat
 
 from pspdocmaker.render import (
@@ -43,7 +43,7 @@ from pspdocmaker.render import (
 
 from pspdocmaker.utils import (
     clamp, rgb_to_hex, hex_to_rgb, wx_col_to_hex, detect_text_encoding,
-    ensure_dir, list_image_files, list_text_files, is_dat_file, get_w,
+    ensure_dir, list_image_files, list_text_files, is_dat_file,
     width_cache,
 )
 
