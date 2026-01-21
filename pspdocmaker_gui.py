@@ -857,6 +857,7 @@ class MainFrame(wx.Frame):
     def _set_ui_busy(self, busy: bool):
         for btn in (
             # files / folders
+            self.lst_files,
             self.btn_add_files,
             self.btn_add_folder,
             self.btn_remove,
