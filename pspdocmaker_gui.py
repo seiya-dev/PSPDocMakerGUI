@@ -33,7 +33,7 @@ except ImportError as e:
 # ---------------------------
 
 from pspdocmaker.font_resolver import FontResolver, load_font
-from pspdocmaker.psp_docdat import extract_pngs_from_dat, pack_pngs_to_dat, iter_png_blobs_from_dat
+from pspdocmaker.psp_docdat import POPS_VER_KEY, extract_pngs_from_dat, pack_pngs_to_dat, iter_png_blobs_from_dat
 
 from pspdocmaker.render import (
     RenderSettings, _cached_gradient,
@@ -66,7 +66,7 @@ class MainFrame(wx.Frame):
         self.panel = wx.Panel(self)
         
         # State
-        self.key_bytes = bytes(0x10)
+        self.key_bytes = POPS_VER_KEY
         
         self.base_dir = Path.cwd()
         self.temp_dir = self.base_dir / '_tmp_pages'
@@ -207,7 +207,7 @@ class MainFrame(wx.Frame):
             '• Binary format\n'
             '• No padding\n\n'
             'Current KEY:\n'
-            f'{bytes(0x10).hex(' ').upper()}'
+            f'{self.key_bytes.hex(' ').upper()}'
         )
         
         # Row 2: Size, Wrap, Merge, Keep
@@ -512,14 +512,14 @@ class MainFrame(wx.Frame):
             )
     
     def _reset_keysbin(self, e):
-        self.key_bytes = bytes(0x10)
+        self.key_bytes = POPS_VER_KEY
         
         tt = self.btn_keysbin.GetToolTipText().splitlines()
-        tt[-1] = bytes(0x10).hex(' ').upper()
+        tt[-1] = self.key_bytes.hex(' ').upper()
         self.btn_keysbin.SetToolTip('\n'.join(tt))
         
         wx.MessageBox(
-            f'Key was reset to:\n{bytes(0x10).hex(' ').upper()}',
+            f'Key was reset to:\n{self.key_bytes.hex(' ').upper()}',
             'Key Reset OK',
             wx.OK | wx.ICON_INFORMATION
         )
