@@ -263,7 +263,9 @@ def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
                 page_info_head = desDecrypt(doc_type, page_buf[0x00:0x20])
                 page_size  = int.from_bytes(page_info_head[0x00:0x04], 'little')
                 enc_chunks = int.from_bytes(page_info_head[0x08:0x0C], 'little')
-                payload_offset = 0x20 + enc_chunks * 0x08
+                
+                subheader_out = bytes(enc_chunks * 0x08)
+                payload_offset = 0x20 + len(subheader_out)
                 
                 if page_size != sz:
                     continue
