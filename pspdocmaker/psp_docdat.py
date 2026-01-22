@@ -8,14 +8,15 @@ import hmac
 import os
 
 import wx
-from .hexdump import hexdump
-from .utils import ensure_dir
-from .bboxmin import boxbb_mac_gen_enc
 
 try:
     from Crypto.Cipher import DES
 except ImportError as e:
     raise SystemExit('This app requires Crypto. Install with: pip install pycryptodome') from e
+
+from .hexdump import hexdump
+from .utils import ensure_dir
+from .bboxmin import bbox_mac_gen_enc
 
 PS1_DES_KEY = bytes([0x39, 0xF7, 0xEF, 0xA1, 0x6C, 0xCE, 0x5F, 0x4C])
 PS1_DES_IV  = bytes([0xA8, 0x19, 0xC4, 0xF5, 0xE1, 0x54, 0xE3, 0x0B])
@@ -96,7 +97,7 @@ def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_di
     doc_hdr = desEncrypt(doc_type, create_header('DOCMAKERNX', png_paths))
     
     if doc_type == 0:
-        pgd_buf += doc_hdr + boxbb_mac_gen_enc(doc_hdr, ins_id) + sha1hash(doc_hdr)
+        pgd_buf += doc_hdr + bbox_mac_gen_enc(doc_hdr, ins_id) + sha1hash(doc_hdr)
     if doc_type == 1:
         pgd_buf += doc_hdr + bytes(0x10) + sha1hmac(PSP_HMAC_KEY, doc_hdr) + sha1hmac(PS3_HMAC_KEY, doc_hdr)
     
@@ -129,7 +130,7 @@ def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_di
     info_buffer = desEncrypt(doc_type, info_buffer)
     
     if doc_type == 0:
-        pgd_buf += info_buffer + boxbb_mac_gen_enc(info_buffer, ins_id) + sha1hash(info_buffer)
+        pgd_buf += info_buffer + bbox_mac_gen_enc(info_buffer, ins_id) + sha1hash(info_buffer)
     if doc_type == 1:
         pgd_buf += info_buffer + bytes(0x10) + sha1hmac(PSP_HMAC_KEY, info_buffer) + sha1hmac(PS3_HMAC_KEY, info_buffer)
     
@@ -143,7 +144,7 @@ def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_di
         p = desEncrypt(doc_type, page_info_head) + p
         
         if doc_type == 0:
-            pgd_buf += p + boxbb_mac_gen_enc(p, ins_id) + sha1hash(p)
+            pgd_buf += p + bbox_mac_gen_enc(p, ins_id) + sha1hash(p)
         if doc_type == 1:
             pgd_buf += p + bytes(0x10) + sha1hmac(PSP_HMAC_KEY, p) + sha1hmac(PS3_HMAC_KEY, p)
     

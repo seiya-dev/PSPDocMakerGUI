@@ -10,7 +10,7 @@ import re
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .font_resolver import load_font
-from .utils import get_w
+from .utils import get_w, clamp
 
 @dataclass
 class RenderSettings:

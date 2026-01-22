@@ -42,7 +42,7 @@ from pspdocmaker.render import (
 )
 
 from pspdocmaker.utils import (
-    clamp, rgb_to_hex, hex_to_rgb, wx_col_to_hex, detect_text_encoding,
+    rgb_to_hex, hex_to_rgb, wx_col_to_hex, detect_text_encoding,
     ensure_dir, list_image_files, list_text_files, is_dat_file,
     width_cache,
 )
