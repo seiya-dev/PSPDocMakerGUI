@@ -1,7 +1,10 @@
+# coding: utf-8
+
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import List, Tuple, Optional, Iterable
 from pathlib import Path
+import random
 import re
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps

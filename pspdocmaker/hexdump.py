@@ -1,3 +1,5 @@
+# coding: utf-8
+
 def hexdump(data: bytes, start_offset: int = 0) -> str:
     if start_offset < 0:
         raise ValueError('start_offset must be >= 0')

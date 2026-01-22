@@ -1,11 +1,11 @@
 #!/usr/bin/python3
 #!/usr/bin/env python
+# coding: utf-8
 
 import os
 import re
 import sys
 import shutil
-import random
 import threading
 import configparser
 

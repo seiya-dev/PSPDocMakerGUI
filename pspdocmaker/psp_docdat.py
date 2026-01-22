@@ -1,3 +1,5 @@
+# coding: utf-8
+
 from typing import List, Tuple, Optional, Iterable
 from pathlib import Path
 import hashlib
