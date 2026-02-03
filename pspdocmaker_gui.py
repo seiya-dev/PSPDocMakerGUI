@@ -555,7 +555,7 @@ class MainFrame(wx.Frame):
                 no_png_dats = []
                 for di in range(len(dats)):
                     out_dir = dats[di].with_suffix('')
-                    extracted = extract_pngs_from_dat(dats[di], out_dir)
+                    extracted = extract_pngs_from_dat(True, dats[di], out_dir)
                     if extracted:
                         self.inputs.extend(extracted)
                     else:
@@ -960,7 +960,7 @@ class MainFrame(wx.Frame):
         
         try:
             self._update_status('Extracting...')
-            files = extract_pngs_from_dat(dat_path, out_dir)
+            files = extract_pngs_from_dat(False, dat_path, out_dir)
             if len(files) > 0:
                 wx.MessageBox(f'Extracted {len(files)} images.', 'Success')
             else:

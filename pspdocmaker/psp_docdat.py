@@ -191,7 +191,7 @@ def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_di
     
     wx.MessageBox(f'Created:\n{out_dat}', 'Success', wx.OK | wx.ICON_INFORMATION)
 
-def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
+def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> List[Path]:
     try:
         pgd_header = b'\0PGD\1\0\0\0\1\0\0\0\0\0\0\0'
         doc_header = b'DOC \0\0\1\0\0\0\1\0'
@@ -210,7 +210,7 @@ def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
                 out_files.append(out)
                 idx += 1
             return out_files
-            
+        
         if data[0x00:0x10] == pgd_header:
             ps1doc = desDecrypt(0, data[0x10:0x70])
             pspdoc = desDecrypt(1, data[0x10:0x70])
@@ -224,13 +224,20 @@ def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
                     doc_type = 1
                     doc_size_flag = int.from_bytes(pspdoc[0x1C:0x20], 'little')
                 case _:
-                    return []
-            
-            if doc_size_flag not in (0, 1):
-                return []
+                    doc_type = 1
+                    doc_size_flag = -1
             
             header_hash = makehash(doc_type, data[0x10:0x70])
             if makehash(doc_type, data[0x10:0x70]) != data[0x80:0x90]:
+                return []
+            
+            if not read_only:
+                if data[0x70:0x80] == bytes(0x10) and doc_size_flag == -1:
+                    key_id = data[0x10:0x18].hex('-').upper()
+                    print(f'[DEBUG] KEY REQUIRED: ID {key_id}')
+                    return []
+            
+            if doc_size_flag not in (0, 1):
                 return []
             
             doc_meta_offset = 0x00A0 if doc_type == 1 else 0x0090
