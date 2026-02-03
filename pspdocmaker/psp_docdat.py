@@ -36,12 +36,24 @@ def desDecrypt(doc_type: int, data: bytes) -> bytes:
     cipher = DES.new(DES_KEY, DES.MODE_CBC, DES_IV)
     return cipher.decrypt(data)
 
+def desCustomDecrypt(doc_key: bytes, data: bytes) -> bytes:
+    DES_KEY = desChangeKey(doc_key)
+    DES_IV  = PSP_DES_IV
+    
+    cipher = DES.new(DES_KEY, DES.MODE_CBC, DES_IV)
+    return cipher.decrypt(data)
+
 def desEncrypt(doc_type: int, data: bytes) -> bytes:
     DES_KEY = PS1_DES_KEY if doc_type == 0 else PSP_DES_KEY
     DES_IV  = PS1_DES_IV  if doc_type == 0 else PSP_DES_IV
     
     cipher = DES.new(DES_KEY, DES.MODE_CBC, DES_IV)
     return cipher.encrypt(data)
+
+def desChangeKey(doc_key: bytes) -> bytes:
+    doc_xor = bytes([0xF9, 0x32, 0xFF, 0x26, 0x47, 0x4A, 0x8D, 0xC0])
+    des_key = bytes(d ^ x for d, x in zip(doc_key, doc_xor))
+    return des_key
 
 def sha1hash(data: bytes) -> bytes:
     return hashlib.sha1(data).digest()[:0x10]
