@@ -17,6 +17,7 @@ except ImportError as e:
 from .hexdump import hexdump
 from .utils import ensure_dir
 from .bboxmin import bbox_mac_gen_enc
+from .doc_keys import KEY_VAULT
 
 PS1_DES_KEY = bytes([0x39, 0xF7, 0xEF, 0xA1, 0x6C, 0xCE, 0x5F, 0x4C])
 PS1_DES_IV  = bytes([0xA8, 0x19, 0xC4, 0xF5, 0xE1, 0x54, 0xE3, 0x0B])
@@ -191,7 +192,7 @@ def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_di
     
     wx.MessageBox(f'Created:\n{out_dat}', 'Success', wx.OK | wx.ICON_INFORMATION)
 
-def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> List[Path]:
+def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
     try:
         pgd_header = b'\0PGD\1\0\0\0\1\0\0\0\0\0\0\0'
         doc_header = b'DOC \0\0\1\0\0\0\1\0'
@@ -201,6 +202,7 @@ def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> Lis
         data = dat_path.read_bytes()
         ensure_dir(out_dir)
         out_files = []
+        doc_key = None
         idx = 0
         
         if data[0x00:0x0C] == doc_header:
@@ -231,10 +233,11 @@ def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> Lis
             if makehash(doc_type, data[0x10:0x70]) != data[0x80:0x90]:
                 return []
             
-            if not read_only:
-                if data[0x70:0x80] == bytes(0x10) and doc_size_flag == -1:
-                    key_id = data[0x10:0x18].hex('-').upper()
-                    print(f'[DEBUG] KEY REQUIRED: ID {key_id}')
+            if data[0x70:0x80] == bytes(0x10) and doc_size_flag == -1:
+                key_id = data[0x10:0x18].hex('-').upper()
+                if key_id in KEY_VAULT:
+                    doc_key = KEY_VAULT[key_id]
+                else:
                     return []
             
             if doc_size_flag not in (0, 1):
@@ -248,7 +251,10 @@ def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> Lis
             if makehash(doc_type, doc_meta) != data[doc_meta_size+0x10:doc_meta_size+0x20]:
                 return []
             
-            doc_meta = desDecrypt(doc_type, doc_meta)
+            if doc_key is not None:
+                doc_meta = desCustomDecrypt(doc_key, doc_meta)
+            else:
+                doc_meta = desDecrypt(doc_type, doc_meta)
             if doc_meta[:0x04] != (-1).to_bytes(4, 'big', signed = True):
                 return []
             
@@ -282,7 +288,10 @@ def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> Lis
                 if makehash(doc_type, page_buf) != page_hash[0x10:0x20]:
                     continue
                 
-                page_info_head = desDecrypt(doc_type, page_buf[0x00:0x20])
+                if doc_key is not None:
+                    page_info_head = desCustomDecrypt(doc_key, page_buf[0x00:0x20])
+                else:
+                    page_info_head = desDecrypt(doc_type, page_buf[0x00:0x20])
                 page_size  = int.from_bytes(page_info_head[0x00:0x04], 'little')
                 enc_chunks = int.from_bytes(page_info_head[0x08:0x0C], 'little')
                 
@@ -294,7 +303,10 @@ def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> Lis
                 
                 if enc_chunks > 0:
                     subheader_out = page_buf[0x20:0x20 + enc_chunks * 0x08]
-                    subheader_out = desDecrypt(doc_type, subheader_out)
+                    if doc_key is not None:
+                        subheader_out = desCustomDecrypt(doc_key, subheader_out)
+                    else:
+                        subheader_out = desDecrypt(doc_type, subheader_out)
                 
                 page_buf = bytearray(page_buf[payload_offset:])
                 if len(page_buf) < png_min_size:
@@ -304,8 +316,12 @@ def extract_pngs_from_dat(read_only: bool, dat_path: Path, out_dir: Path) -> Lis
                     for j in range(enc_chunks):
                         enc_chunk_offset = int.from_bytes(subheader_out[j * 0x08 + 0x00:j * 0x08 + 0x04], 'little')
                         enc_chunk_size   = int.from_bytes(subheader_out[j * 0x08 + 0x04:j * 0x08 + 0x08], 'little')
+                        enc_chunk        = page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size]
                         
-                        dec_chunk = desDecrypt(doc_type, page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size])
+                        if doc_key is not None:
+                            dec_chunk = desCustomDecrypt(doc_key, enc_chunk)
+                        else:
+                            dec_chunk = desDecrypt(doc_type, enc_chunk)
                         page_buf[enc_chunk_offset:enc_chunk_offset + enc_chunk_size] = dec_chunk
                 
                 needle_idx = page_buf.rfind(needle_buf)
