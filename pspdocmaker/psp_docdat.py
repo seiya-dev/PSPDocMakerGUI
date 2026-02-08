@@ -237,6 +237,8 @@ def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
                 key_id = data[0x10:0x18].hex('-').upper()
                 if key_id in KEY_VAULT:
                     doc_key = KEY_VAULT[key_id]
+                    pspdoc = desCustomDecrypt(doc_key, data[0x10:0x70])
+                    doc_size_flag = int.from_bytes(pspdoc[0x1C:0x20], 'little')
                 else:
                     return []
             
