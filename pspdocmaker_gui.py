@@ -53,6 +53,7 @@ from pspdocmaker.utils import (
 
 APP_NAME    = 'PSP DocMaker NX (GUI)'
 CONFIG_FILE = 'pspdocmaker-config.ini'
+GAMEID_PATTERN = re.compile(r"^[A-Za-z]{4}\d{5}$")
 
 # ---------------------------
 # UI: Main Application
@@ -75,6 +76,8 @@ class MainFrame(wx.Frame):
         self.preview_pages: List[Path] = []
         self.preview_index = 0
         self.preview_bitmap = None
+        
+        self.doc_game_id = 'DMNX00000'
         self.cfg = configparser.ConfigParser()
         
         font = wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
@@ -182,18 +185,26 @@ class MainFrame(wx.Frame):
         
         # Row 1: Format and KEYS
         st_format = wx.StaticText(self.panel, label='FORMAT:')
-        self.doc_type     = wx.Choice(self.panel, choices=['PS1 on PSP/PS3', 'PSP & PS minis'])
-        self.btn_keysbin  = wx.Button(self.panel, label='KEYS.BIN (?)')
-        self.btn_keyreset = wx.Button(self.panel, label='RESET KEY')
+        self.doc_type      = wx.Choice(self.panel, choices=['PS1 on PSP/PS3', 'PSP & PS minis'])
+        self.btn_keysbin   = wx.Button(self.panel, label='KEYS.BIN (?)')
+        self.btn_keyreset  = wx.Button(self.panel, label='RESET KEY')
         
-        row1.Add(st_format,         0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        row1.Add(self.doc_type,     0, wx.RIGHT, 10)
-        row1.Add(self.btn_keysbin,  0, wx.RIGHT, 5)
-        row1.Add(self.btn_keyreset, 0, wx.RIGHT, 5)
+        st_gameid = wx.StaticText(self.panel, label='GameID:')
+        self.btn_setgameid = wx.Button(self.panel, label=self.doc_game_id)
+        
+        row1.Add(st_format,          0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        row1.Add(self.doc_type,      0, wx.RIGHT, 10)
+        row1.Add(self.btn_keysbin,   0, wx.RIGHT, 5)
+        row1.Add(self.btn_keyreset,  0, wx.RIGHT, 5)
+        
+        row1.AddStretchSpacer(1)
+        row1.Add(st_gameid,          0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 5)
+        row1.Add(self.btn_setgameid, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 5)
         
         self.doc_type.Bind(wx.EVT_CHOICE, self._on_doc_type_change)
         self.btn_keysbin.Bind(wx.EVT_BUTTON, self._open_keysbin)
         self.btn_keyreset.Bind(wx.EVT_BUTTON, self._reset_keysbin)
+        self.btn_setgameid.Bind(wx.EVT_BUTTON, self.on_setgameid)
         
         self.doc_type.SetToolTip(
             'Manual Format:\n'
@@ -864,6 +875,7 @@ class MainFrame(wx.Frame):
             self.btn_up,
             self.btn_down,
             self.btn_clear,
+            self.btn_setgameid,
             # preview
             self.btn_prev,
             self.btn_next,
@@ -899,6 +911,16 @@ class MainFrame(wx.Frame):
             self.btn_save_cfg,
         ):
             btn.Enable(not busy)
+    
+    def on_setgameid(self, event):
+        dlg = GameIdDialog(self.panel, self.doc_game_id)
+        try:
+            if dlg.ShowModal() == wx.ID_OK:
+                game_id = dlg.GetValue()
+                self.doc_game_id = game_id
+                self.btn_setgameid.SetLabel(game_id)
+        finally:
+            dlg.Destroy()
     
     def on_preview_all(self, event):
         if not self.inputs:
@@ -968,6 +990,77 @@ class MainFrame(wx.Frame):
             self._update_status('Ready')
         except Exception as e:
             wx.MessageBox(str(e), 'Error')
+
+class GameIdDialog(wx.Dialog):
+    def __init__(self, parent, GameId):
+        super().__init__(parent, title="Enter Game ID")
+        
+        self.txt = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
+        self.txt.SetMaxLength(9)
+        
+        if GameId:
+            self.txt.SetValue(str(GameId).strip().upper())
+            self.txt.SetSelection(-1, -1)
+        
+        ok = wx.Button(self, wx.ID_OK, "OK")
+        cancel = wx.Button(self, wx.ID_CANCEL, "Cancel")
+        ok.SetDefault()
+        
+        s = wx.BoxSizer(wx.VERTICAL)
+        s.Add(wx.StaticText(self, label="Format: XXXXYYYYY (X=letter, Y=number)"), 0, wx.ALL, 8)
+        s.Add(self.txt, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
+        
+        btns = wx.BoxSizer(wx.HORIZONTAL)
+        btns.AddStretchSpacer(1)
+        btns.Add(cancel, 0, wx.ALL, 8)
+        btns.Add(ok, 0, wx.ALL, 8)
+        
+        s.Add(btns, 0, wx.EXPAND)
+        self.SetSizerAndFit(s)
+        self.CentreOnParent()
+        
+        self.Bind(wx.EVT_TEXT, self.on_text, self.txt)
+        self.Bind(wx.EVT_TEXT_ENTER, lambda e: self.EndModal(wx.ID_OK), self.txt)
+        self.Bind(wx.EVT_BUTTON, self.on_ok, ok)
+    
+    def on_text(self, event):
+        val = self.txt.GetValue()
+        
+        filtered = "".join(ch for ch in val if ch.isalnum()).upper()[:9]
+        
+        # Enforce per-position constraints
+        out = []
+        for i, ch in enumerate(filtered):
+            if i < 4:
+                if ch.isalpha():
+                    out.append(ch)
+            else:
+                if ch.isdigit():
+                    out.append(ch)
+        
+        new_val = "".join(out)
+        
+        if new_val != val:
+            pos = self.txt.GetInsertionPoint()
+            self.txt.ChangeValue(new_val)
+            self.txt.SetInsertionPoint(min(pos, len(new_val)))
+        
+        event.Skip()
+    
+    def on_ok(self, event):
+        value = self.txt.GetValue().strip().upper()
+        if not GAMEID_PATTERN.match(value):
+            wx.MessageBox(
+                "Invalid format.\n\nUse: XXXXYYYYY\n(4 letters + 5 digits)",
+                "Error",
+                wx.ICON_ERROR | wx.OK,
+                parent=self
+            )
+            return
+        self.EndModal(wx.ID_OK)
+    
+    def GetValue(self):
+        return self.txt.GetValue().strip().upper()
 
 if __name__ == '__main__':
     app = wx.App(False)
