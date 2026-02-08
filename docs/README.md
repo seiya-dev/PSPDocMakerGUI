@@ -15,4 +15,4 @@ An easy-to-use graphical tool for creating properly formatted DOCUMENT.DAT (manu
 - Set background image: bmp, jpg, jpeg, png, gif. You can use any images, they are scaled.
 - Background fill options: solid color, color gradient, gradient with a border and "Random style".
 - Adjust the size of the text indentation from the screen borders.
-- Extract encrypted DOCUMENT.DAT with default key.
+- Extract encrypted DOCUMENT.DAT with default key and almost all with DOCINFO.EDAT.
