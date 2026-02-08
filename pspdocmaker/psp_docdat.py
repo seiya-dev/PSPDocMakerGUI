@@ -80,7 +80,7 @@ def create_header(gameid, pages):
     struct.pack_into('<I', buf, 0x1C, 0 if len(pages) < 100 else 1)
     return buf
 
-def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_dir: Path) -> None:
+def pack_pngs_to_dat(game_id: str, doc_type: int, ins_id: bytes, png_paths: List[Path], out_dir: Path) -> None:
     out_dat = out_dir / 'DOCUMENT.DAT'
     out_key = out_dir / 'KEYS.BIN'
     ensure_dir(out_dir)
@@ -107,7 +107,7 @@ def pack_pngs_to_dat(doc_type: int, ins_id: bytes, png_paths: List[Path], out_di
         return
     
     pgd_buf = b'\0PGD\1\0\0\0\1\0\0\0\0\0\0\0'
-    doc_hdr = desEncrypt(doc_type, create_header('DOCMAKERNX', png_paths))
+    doc_hdr = desEncrypt(doc_type, create_header(game_id, png_paths))
     
     if doc_type == 0:
         pgd_buf += doc_hdr + bbox_mac_gen_enc(doc_hdr, ins_id) + sha1hash(doc_hdr)

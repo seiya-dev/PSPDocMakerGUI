@@ -77,7 +77,7 @@ class MainFrame(wx.Frame):
         self.preview_index = 0
         self.preview_bitmap = None
         
-        self.doc_game_id = 'DMNX00000'
+        self.doc_game_id = 'PSDM02025'
         self.cfg = configparser.ConfigParser()
         
         font = wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
@@ -852,7 +852,7 @@ class MainFrame(wx.Frame):
         if for_file:
             try:
                 self._update_status('Packing DAT...')
-                pack_pngs_to_dat(self.doc_type.GetSelection(), self.key_bytes, self.preview_pages, self.dest_dir)
+                pack_pngs_to_dat(self.doc_game_id, self.doc_type.GetSelection(), self.key_bytes, self.preview_pages, self.dest_dir)
                 self._update_status('Done.')
             except Exception as e:
                 wx.MessageBox(str(e), 'Error', wx.ICON_ERROR)
