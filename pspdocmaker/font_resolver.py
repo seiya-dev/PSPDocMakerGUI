@@ -1,14 +1,14 @@
 # coding: utf-8
 
 from typing import List, Tuple, Optional, Iterable
-import sys
+from pathlib import Path
+import sys, os
 
 from PIL import ImageFont
 import wx
 
 class FontResolver:
     # Resolve wx.Font to a real font file path in a cross-platform way.
-    
     def resolve(self, wx_font: wx.Font) -> Optional[str]:
         if sys.platform.startswith('win'):
             return self._resolve_windows(wx_font)
@@ -66,7 +66,7 @@ class FontResolver:
                     fonts_dir = Path(os.environ.get('WINDIR', 'C:\\Windows')) / 'Fonts'
                     return str(fonts_dir / best_match)
         
-        except Exception:
+        except Exception as exp:
             return None
         
         return None
