@@ -66,7 +66,7 @@ class FontResolver:
                     fonts_dir = Path(os.environ.get('WINDIR', 'C:\\Windows')) / 'Fonts'
                     return str(fonts_dir / best_match)
         
-        except Exception as exp:
+        except Exception:
             return None
         
         return None

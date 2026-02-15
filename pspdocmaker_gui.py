@@ -726,6 +726,25 @@ class MainFrame(wx.Frame):
         data = wx.FontData()
         data.EnableEffects(False)
         
+        init_font_size = int(self.spn_font_size.GetValue() or 12)
+        
+        try:
+            ft = ImageFont.truetype(self.current_font_path, size=max(1, init_font_size))
+            faceName, _ = ft.getname()
+        except Exception:
+            faceName = ''
+        
+        init_font = wx.Font(
+            pointSize = init_font_size,
+            family = wx.FONTFAMILY_DEFAULT,
+            style = wx.FONTSTYLE_NORMAL,
+            weight = wx.FONTWEIGHT_NORMAL,
+            faceName = faceName,
+        )
+        
+        data.SetInitialFont(init_font)
+        data.SetRange(8, 72)
+        
         with wx.FontDialog(self, data) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
                 return

@@ -23,13 +23,13 @@ class RenderSettings:
     panel_w: int = 480
     panel_h: int = 480
     
-    margin_left:   int = 16
-    margin_top:    int = 16
-    margin_right:  int = 16
-    margin_bottom: int = 16
+    margin_left:   int = 10
+    margin_top:    int = 10
+    margin_right:  int = 10
+    margin_bottom: int = 10
     
     font_path:  Optional[str] = None
-    font_size:  int = 14
+    font_size:  int = 12
     font_color: Tuple[int, int, int] = (255, 255, 255)
     
     word_wrap:         bool = True
