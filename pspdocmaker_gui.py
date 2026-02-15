@@ -77,6 +77,11 @@ class MainFrame(wx.Frame):
         self.preview_index = 0
         self.preview_bitmap = None
         
+        self.doc_sizes = {
+            0: ['480x248', '480x272', '480x480'],
+            1: ['480x248', '480x272', '480x480', '480x960'],
+        }
+        
         self.doc_game_id = 'PSDM02025'
         self.cfg = configparser.ConfigParser()
         
@@ -223,7 +228,7 @@ class MainFrame(wx.Frame):
         
         # Row 2: Size, Wrap, Merge, Keep
         st_size = wx.StaticText(self.panel, label='Size:')
-        self.ch_size   = wx.Choice(self.panel, choices=['480x248', '480x272', '480x480', '480x960'])
+        self.ch_size   = wx.Choice(self.panel, choices=[])
         self.chk_wrap  = wx.CheckBox(self.panel, label='Word Wrap')
         self.chk_merge = wx.CheckBox(self.panel, label='Merge all to one')
         self.chk_keep  = wx.CheckBox(self.panel, label='Keep temp PNGs')
@@ -233,6 +238,11 @@ class MainFrame(wx.Frame):
         row2.Add(self.chk_wrap,  0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
         row2.Add(self.chk_merge, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 10)
         row2.Add(self.chk_keep,  0, wx.ALIGN_CENTER_VERTICAL)
+        
+        self.ch_size.SetToolTip(
+            'Converted Text2Image image size\n'
+            'Not applied to images, they always max sized'
+        )
         
         self.chk_wrap.SetToolTip(
             'Lines are wrapped across the screen by words\n'
@@ -381,12 +391,15 @@ class MainFrame(wx.Frame):
             wx.MessageBox(f'Failed to save config:\n{e}', 'Error', wx.ICON_ERROR)
     
     def _apply_config_to_widgets(self):
-        # Size
-        size = self.cfg['Output'].get('size', '480x272')
-        idx = self.ch_size.FindString(size)
-        self.ch_size.SetSelection(idx if idx != wx.NOT_FOUND else 1)
-
-        self.doc_type.SetSelection(0)
+        doc_type = int(self.cfg['Output'].get('type', '0'))
+        doc_type = doc_type if 0 <= doc_type < self.doc_type.GetCount() else 0
+        
+        self.doc_type.SetSelection(doc_type)
+        
+        doc_sizes = self.doc_sizes[doc_type]
+        self.update_doc_sizes_widget(doc_type)
+        sel_size = self.cfg['Output'].get('size', doc_sizes[0]).strip()
+        self.update_doc_sizes_widget(doc_type, sel_size)
         
         self.chk_wrap.SetValue(self.cfg['Layout'].getboolean('word_wrap', fallback=True))
         self.chk_merge.SetValue(self.cfg['General'].getboolean('merge_files', fallback=False))
@@ -411,14 +424,22 @@ class MainFrame(wx.Frame):
         self.bg_end = self.cfg['Background'].get('grad_end', '#404040')
         self.bg_frame = self.cfg['Background'].get('frame_color', '#ffffff')
         cfg_font = self.cfg['Font'].get('path', '').strip()
+        
         if cfg_font:
             self.current_font_path = cfg_font
+        
         self.current_bg_image = self.cfg['Background'].get('image', '')
     
     def _gather_render_settings(self) -> RenderSettings:
         size = self.ch_size.GetStringSelection()
         w, h = map(int, size.split('x'))
         rs = RenderSettings(page_w=w, page_h=h)
+        
+        doc_type = self.doc_type.GetSelection()
+        doc_size = self.doc_sizes[doc_type][-1]
+        rs.max_w, rs.max_h = map(int, doc_size.split('x'))
+        
+        rs.panel_w, rs.panel_h = self.preview_panel.GetClientSize()
         
         rs.word_wrap = self.chk_wrap.GetValue()
         rs.indent_first_line = self.spn_indent.GetValue()
@@ -441,8 +462,6 @@ class MainFrame(wx.Frame):
         return rs
     
     def on_save_settings(self, event):
-        self.cfg['Output']['size'] = self.ch_size.GetStringSelection()
-        self.cfg['Layout']['word_wrap'] = '1' if self.chk_wrap.GetValue() else '0'
         self.cfg['General']['merge_files'] = '1' if self.chk_merge.GetValue() else '0'
         self.cfg['General']['keep_temp'] = '1' if self.chk_keep.GetValue() else '0'
         
@@ -451,6 +470,7 @@ class MainFrame(wx.Frame):
         self.cfg['Font']['path'] = self.current_font_path
         
         self.cfg['Layout']['indent'] = str(self.spn_indent.GetValue())
+        self.cfg['Layout']['word_wrap'] = '1' if self.chk_wrap.GetValue() else '0'
         
         self.cfg['Background']['mode'] = self.ch_bg_mode.GetStringSelection()
         self.cfg['Background']['invert'] = '1' if self.chk_invert.GetValue() else '0'
@@ -464,8 +484,27 @@ class MainFrame(wx.Frame):
         self.cfg['Background']['frame_color'] = self.bg_frame
         self.cfg['Background']['image'] = self.current_bg_image
         
+        self.cfg['Output']['type'] = str(self.doc_type.GetSelection())
+        self.cfg['Output']['size'] = self.ch_size.GetStringSelection()
+        
         self._save_config_file()
         wx.MessageBox('Settings saved successfully.', 'Info', wx.OK | wx.ICON_INFORMATION)
+    
+    def find_index(self, lst, value):
+        try:
+            return lst.index(value)
+        except ValueError:
+            return len(lst) - 1
+    
+    def update_doc_sizes_widget(self, doc_type, sel_size = ''):
+        doc_sizes = self.doc_sizes[doc_type]
+        
+        size_idx = self.find_index(doc_sizes, sel_size) if sel_size != '' else self.ch_size.GetSelection()
+        size_idx = size_idx if 0 <= size_idx < len(doc_sizes) else len(doc_sizes) - 1
+        
+        self.ch_size.Clear()
+        self.ch_size.AppendItems(doc_sizes)
+        self.ch_size.SetSelection(size_idx)
     
     def _on_doc_type_change(self, event):
         value = event.GetSelection()
@@ -473,10 +512,12 @@ class MainFrame(wx.Frame):
         if value == 1:
             self.btn_keysbin.Hide()
             self.btn_keyreset.Hide()
+            self.update_doc_sizes_widget(value)
         
         if value == 0:
             self.btn_keysbin.Show()
             self.btn_keyreset.Show()
+            self.update_doc_sizes_widget(value)
     
     # ---------------------------
     # File Management

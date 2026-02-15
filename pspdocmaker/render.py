@@ -17,6 +17,12 @@ class RenderSettings:
     page_w: int = 480
     page_h: int = 272
     
+    max_w: int = 480
+    max_h: int = 480
+    
+    panel_w: int = 480
+    panel_h: int = 480
+    
     margin_left:   int = 16
     margin_top:    int = 16
     margin_right:  int = 16
@@ -232,19 +238,26 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
         return base
     
     img.thumbnail(
-        (rs.page_w, rs.page_h),
+        (rs.max_w, rs.max_w),
         Image.Resampling.LANCZOS
     )
     
-    bw, bh = rs.page_w, rs.page_h
-    iw, ih = img.size
-    
-    x = (bw - iw) // 2
-    y = (bh - ih) // 2
-    
     if not for_file:
-        base_rgba = base.convert('RGBA')
-        base_rgba.alpha_composite(img, (x, y))
-        return base_rgba.convert('RGB')
+        bw, bh = rs.panel_w, rs.panel_h
+        iw, ih = img.size
+        
+        x = max(0, (bw - iw) // 2)
+        y = max(0, (bh - ih) // 2)
+        
+        scale = min(bw / iw, bh / ih)
+        nw, nh = int(iw * scale), int(ih * scale)
+        img2 = img.resize((nw, nh), Image.LANCZOS)
+        
+        x = (bw - nw) // 2
+        y = (bh - nh) // 2
+        
+        base = Image.new('RGBA', (bw, bh), (0, 0, 0, 255))
+        base.alpha_composite(img2.convert('RGBA'), (x, y))
+        return base.convert('RGB')
     else:
         return img
