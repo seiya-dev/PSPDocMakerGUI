@@ -60,7 +60,6 @@ def _cached_gradient(w: int, h: int, c1: tuple[int, int, int], c2: tuple[int, in
     grad = Image.merge('RGB', (r, g, b))
     return grad.resize((w, h), Image.Resampling.BILINEAR)
 
-
 def make_background(rs: RenderSettings, page_index: int = 0) -> Image.Image:
     w, h = rs.page_w, rs.page_h
     grad_start, grad_end = rs.grad_start, rs.grad_end
