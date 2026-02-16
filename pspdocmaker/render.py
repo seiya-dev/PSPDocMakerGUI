@@ -79,10 +79,10 @@ class ExtraRenderParamsDialog(wx.Dialog):
             grid.Add(sc, 0, wx.EXPAND)
             return sc
         
-        self.sc_top = add_row('Top', 'top', 0, 50)
-        self.sc_left = add_row('Left', 'left', 0, 50)
-        self.sc_right = add_row('Right', 'right', 0, 50)
-        self.sc_bottom = add_row('Bottom', 'bottom', 0, 50)
+        self.sc_top = add_row('Margin Top', 'top', 0, 50)
+        self.sc_left = add_row('Margin Left', 'left', 0, 50)
+        self.sc_right = add_row('Margin Right', 'right', 0, 50)
+        self.sc_bottom = add_row('Margin Bottom', 'bottom', 0, 50)
         
         self.sc_line_spacing = add_row('Line Spacing', 'line_spacing', 0, 10)
         self.sc_indent_first = add_row('Indent First Line', 'indent_first', 0, 50)

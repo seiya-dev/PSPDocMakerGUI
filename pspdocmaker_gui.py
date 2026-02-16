@@ -104,7 +104,7 @@ class MainFrame(wx.Frame):
         self.Center()
     
     def _init_ui(self):
-        self.main_win = wx.BoxSizer(wx.HORIZONTAL)
+        main_win = wx.BoxSizer(wx.HORIZONTAL)
         
         # --- LEFT PANEL: Files ---
         left_panel = wx.BoxSizer(wx.VERTICAL)
@@ -148,7 +148,7 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_BUTTON, lambda e: self.on_move(1),  self.btn_down)
         self.Bind(wx.EVT_BUTTON, self.on_clear,              self.btn_clear)
         
-        self.main_win.Add(left_panel, 1, wx.EXPAND | wx.TOP | wx.LEFT | wx.BOTTOM, 10)
+        main_win.Add(left_panel, 1, wx.EXPAND | wx.TOP | wx.LEFT | wx.BOTTOM, 10)
         
         # --- RIGHT PANEL: Settings ---
         right_panel = wx.BoxSizer(wx.VERTICAL)
@@ -372,9 +372,9 @@ class MainFrame(wx.Frame):
         self.st_status = wx.StaticText(self.panel, label='Ready')
         right_panel.Add(self.st_status, 0, wx.ALL, 5)
         
-        self.main_win.Add(right_panel, 1, wx.EXPAND | wx.ALL, 5)
+        main_win.Add(right_panel, 1, wx.EXPAND | wx.ALL, 5)
         
-        self.panel.SetSizer(self.main_win)
+        self.panel.SetSizer(main_win)
     
     # ---------------------------
     # Config Logic
@@ -414,7 +414,6 @@ class MainFrame(wx.Frame):
         doc_type = self.get_int_clamped('Output', 'type', 0, 0, 1)
         
         self.doc_type.SetSelection(doc_type)
-        
         self._apply_doc_type_ui(doc_type)
         
         doc_sizes = self.doc_sizes[doc_type]
@@ -543,21 +542,19 @@ class MainFrame(wx.Frame):
         self.ch_size.SetSelection(size_idx)
     
     def _apply_doc_type_ui(self, value: int):
-        show_keys = (value == 0)
+        ps1doc = (value == 0)
         
-        item_keys = self.main_win.GetItem(self.btn_keysbin)     # wx.SizerItem или None
-        item_reset = self.main_win.GetItem(self.btn_keyreset)
-    
-        if item_keys:
-            item_keys.Show(show_keys)
-        if item_reset:
-            item_reset.Show(show_keys)
+        self.btn_keysbin.Show(ps1doc)
+        self.btn_keyreset.Show(ps1doc)
         
         self.update_doc_sizes_widget(value)
         
-        # пересчитать layout
-        self.panel.Layout()
-        self.panel.SendSizeEvent()
+        self.panel.Freeze()
+        try:
+            self.panel.SendSizeEvent()
+            self.panel.Refresh()
+        finally:
+            self.panel.Thaw()
     
     def _on_doc_type_change(self, event):
         value = event.GetSelection()
