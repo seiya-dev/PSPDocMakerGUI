@@ -66,7 +66,6 @@ class MainFrame(wx.Frame):
         
         self.panel = wx.Panel(self)
         
-        # State
         self.key_bytes = POPS_VER_KEY
         
         self.base_dir = Path.cwd()
@@ -85,7 +84,13 @@ class MainFrame(wx.Frame):
         self.doc_game_id = 'PSDM02025'
         self.cfg = configparser.ConfigParser()
         
-        font = wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+        font = wx.Font(
+            10,
+            wx.FONTFAMILY_DEFAULT,
+            wx.FONTSTYLE_NORMAL,
+            wx.FONTWEIGHT_NORMAL
+        )
+        
         self.SetFont(font)
         self._init_ui()
         
@@ -263,21 +268,19 @@ class MainFrame(wx.Frame):
         self.spn_font_size  = wx.SpinCtrl(self.panel, min=8, max=72)
         self.btn_font_path  = wx.Button(self.panel, label='Select Font...')
         self.btn_font_color = wx.Button(self.panel, label='Font Color')
-        st_margin           = wx.StaticText(self.panel, label='Margin:')
-        self.spn_margin     = wx.SpinCtrl(self.panel, min=0, max=50)
+        #st_margin           = wx.StaticText(self.panel, label='Margin:')
+        #self.spn_margin     = wx.SpinCtrl(self.panel, min=0, max=50)
         st_indent           = wx.StaticText(self.panel, label='Indent:')
         self.spn_indent     = wx.SpinCtrl(self.panel, min=0, max=100)
         
-        self.spn_margin.SetToolTip(
-            'Text padding from the image edge'
-        )
+        #self.spn_margin.SetToolTip('Text padding from the image edge')
         
         row3.Add(st_font_size,        0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         row3.Add(self.spn_font_size,  0, wx.RIGHT, 10)
         row3.Add(self.btn_font_path,  0, wx.RIGHT, 10)
         row3.Add(self.btn_font_color, 0, wx.RIGHT, 15)
-        row3.Add(st_margin,           0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        row3.Add(self.spn_margin,     0, wx.RIGHT, 10)
+        #row3.Add(st_margin,           0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        #row3.Add(self.spn_margin,     0, wx.RIGHT, 10)
         row3.Add(st_indent,           0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         row3.Add(self.spn_indent,     0)
         
@@ -413,18 +416,19 @@ class MainFrame(wx.Frame):
         self.chk_merge.SetValue(self.cfg['General'].getboolean('merge_files', fallback=False))
         self.chk_keep.SetValue(self.cfg['General'].getboolean('keep_temp', fallback=False))
         
-        self.spn_font_size.SetValue(int(self.cfg['Font'].get('size', '14')))
-        self.spn_margin.SetValue(int(self.cfg['Layout'].get('margin', '10')))
-        self.spn_indent.SetValue(int(self.cfg['Layout'].get('indent', '0')))
+        self.spn_font_size.SetValue(int(self.cfg['Font'].get('size', str(RenderSettings.font_size))))
         
-        bg_mode = self.cfg['Background'].get('mode', 'solid')
+        #self.spn_margin.SetValue(int(self.cfg['Layout'].get('margin', '10')))
+        self.spn_indent.SetValue(int(self.cfg['Layout'].get('indent', str(RenderSettings.indent_first_line))))
+        
+        bg_mode = self.cfg['Background'].get('mode', RenderSettings.background_mode)
         idx = self.ch_bg_mode.FindString(bg_mode)
         self.ch_bg_mode.SetSelection(idx if idx != wx.NOT_FOUND else 0)
         
         self.chk_invert.SetValue(self.cfg['Background'].getboolean('invert', fallback=False))
         self.chk_rand_grad.SetValue(self.cfg['Background'].getboolean('random_gradient', fallback=False))
         self.chk_rand_frame.SetValue(self.cfg['Background'].getboolean('random_frame', fallback=False))
-        self.spn_frame_thick.SetValue(int(self.cfg['Background'].get('frame_thickness', '5')))
+        self.spn_frame_thick.SetValue(int(self.cfg['Background'].get('frame_thickness', str(RenderSettings.frame_thickness))))
         
         # Store colors in temp vars for retrieval, widgets don't show color directly except via dialog
         self.current_font_color = self.cfg['Font'].get('color', '#ffffff')
@@ -462,8 +466,8 @@ class MainFrame(wx.Frame):
         rs.random_style_frame = self.chk_rand_frame.GetValue()
         rs.frame_thickness = self.spn_frame_thick.GetValue()
         
-        rs_margin = self.spn_margin.GetValue() + rs.frame_thickness
-        rs.margin_left, rs.margin_top, rs.margin_right, rs.margin_bottom = (rs_margin,) * 4
+        #rs_margin = self.spn_margin.GetValue() + rs.frame_thickness
+        #rs.margin_left, rs.margin_top, rs.margin_right, rs.margin_bottom = (rs_margin,) * 4
         
         rs.bg_color = hex_to_rgb(self.bg_solid)
         rs.grad_start = hex_to_rgb(self.bg_start)
@@ -481,7 +485,7 @@ class MainFrame(wx.Frame):
         self.cfg['Font']['color'] = self.current_font_color
         self.cfg['Font']['path'] = self.current_font_path
         
-        self.cfg['Layout']['margin'] = str(self.spn_margin.GetValue())
+        #self.cfg['Layout']['margin'] = str(self.spn_margin.GetValue())
         self.cfg['Layout']['indent'] = str(self.spn_indent.GetValue())
         self.cfg['Layout']['word_wrap'] = '1' if self.chk_wrap.GetValue() else '0'
         
@@ -715,7 +719,6 @@ class MainFrame(wx.Frame):
         font_path = self.font_resolver.resolve(wx_font)
         if font_path:
             self.current_font_path = font_path
-            self.spn_font_size.SetValue(wx_font.GetPointSize())
             return
         
         if sys.platform.startswith('win'):
@@ -739,7 +742,7 @@ class MainFrame(wx.Frame):
         data = wx.FontData()
         data.EnableEffects(False)
         
-        init_font_size = int(self.spn_font_size.GetValue() or 12)
+        init_font_size = int(self.spn_font_size.GetValue() or RenderSettings.font_size)
         
         try:
             ft = ImageFont.truetype(self.current_font_path, size=max(1, init_font_size))
@@ -964,7 +967,7 @@ class MainFrame(wx.Frame):
             self.spn_font_size,
             self.btn_font_path,
             self.btn_font_color,
-            self.spn_margin,
+            #self.spn_margin,
             self.spn_indent,
             # set background
             self.ch_bg_mode,

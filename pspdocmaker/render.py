@@ -15,7 +15,7 @@ from .utils import get_w, clamp
 @dataclass
 class RenderSettings:
     page_w: int = 480
-    page_h: int = 272
+    page_h: int = 480
     
     max_w: int = 480
     max_h: int = 480
@@ -23,13 +23,14 @@ class RenderSettings:
     panel_w: int = 480
     panel_h: int = 480
     
-    margin_left:   int = 10
-    margin_top:    int = 10
-    margin_right:  int = 10
-    margin_bottom: int = 10
+    margin_left:   int = 14
+    margin_top:    int = 14
+    margin_right:  int = 14
+    margin_bottom: int = 14
     
-    font_path:  Optional[str] = None
-    font_size:  int = 12
+    font_path: Optional[str] = None
+    font_size: int = 12
+    
     font_color: Tuple[int, int, int] = (255, 255, 255)
     
     word_wrap:         bool = True
@@ -37,11 +38,14 @@ class RenderSettings:
     indent_first_line: int = 0
     
     background_mode:       str = 'solid'
+    
     bg_color:              Tuple[int, int, int] = (0, 0, 0)
     grad_start:            Tuple[int, int, int] = (10, 10, 10)
     grad_end:              Tuple[int, int, int] = (70, 70, 70)
     frame_color:           Tuple[int, int, int] = (255, 255, 255)
+    
     frame_thickness:       int = 5
+    
     invert:                bool = False
     random_style_gradient: bool = False
     random_style_frame:    bool = False
@@ -230,33 +234,34 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
     base = make_background(rs, page_index=page_index)
     
     try:
-        img = Image.open(img_path).convert('RGBA')
+        img = Image.open(img_path)
     except Exception:
         draw = ImageDraw.Draw(base)
         draw.text((10, 10), f'Failed to open:\n{img_path.name}', fill=(255, 0, 0))
         return base
     
-    img.thumbnail(
-        (rs.max_w, rs.max_w),
-        Image.Resampling.LANCZOS
-    )
+    iw, ih = img.size
+    if iw != rs.max_w or ih != rs.max_h:
+        img.thumbnail(
+            (rs.max_w, rs.max_h),
+            Image.Resampling.LANCZOS
+        )
     
-    if not for_file:
-        bw, bh = rs.panel_w, rs.panel_h
-        iw, ih = img.size
-        
-        x = max(0, (bw - iw) // 2)
-        y = max(0, (bh - ih) // 2)
-        
-        scale = min(bw / iw, bh / ih)
-        nw, nh = int(iw * scale), int(ih * scale)
-        img2 = img.resize((nw, nh), Image.LANCZOS)
-        
-        x = (bw - nw) // 2
-        y = (bh - nh) // 2
-        
-        base = Image.new('RGBA', (bw, bh), (0, 0, 0, 255))
-        base.alpha_composite(img2.convert('RGBA'), (x, y))
-        return base.convert('RGB')
-    else:
+    if for_file:
         return img
+    
+    bw, bh = rs.panel_w, rs.panel_h
+    
+    x = max(0, (bw - iw) // 2)
+    y = max(0, (bh - ih) // 2)
+    
+    scale = min(bw / iw, bh / ih)
+    nw, nh = int(iw * scale), int(ih * scale)
+    img2 = img.resize((nw, nh), Image.LANCZOS)
+    
+    x = (bw - nw) // 2
+    y = (bh - nh) // 2
+    
+    base = Image.new('RGB', (bw, bh), (0, 0, 0, 255))
+    base.alpha_composite(img2.convert('RGB'), (x, y))
+    return base.convert('RGB')
