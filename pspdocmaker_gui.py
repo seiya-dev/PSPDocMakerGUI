@@ -413,6 +413,7 @@ class MainFrame(wx.Frame):
         doc_type = self.get_int_clamped('Output', 'type', 0, 0, 1)
         
         self.doc_type.SetSelection(doc_type)
+        
         self._apply_doc_type_ui(doc_type)
         
         doc_sizes = self.doc_sizes[doc_type]
@@ -431,6 +432,8 @@ class MainFrame(wx.Frame):
         rs.margin_left   = self.get_int_clamped('Layout', 'margin_left',   rs.margin_left  , 0, 50)
         rs.margin_right  = self.get_int_clamped('Layout', 'margin_right',  rs.margin_right , 0, 50)
         rs.margin_bottom = self.get_int_clamped('Layout', 'margin_bottom', rs.margin_bottom, 0, 50)
+        
+        rs.line_spacing      = self.get_int_clamped('Layout', 'line_spacing', rs.line_spacing, 0, 50)
         rs.indent_first_line = self.get_int_clamped('Layout', 'indent', rs.indent_first_line, 0, 50)
         
         bg_mode = self.cfg['Background'].get('mode', RenderSettings.background_mode)
@@ -459,12 +462,11 @@ class MainFrame(wx.Frame):
         rs = RenderSettings
         
         size = self.ch_size.GetStringSelection()
-        rs.page_w, rs.page_w = map(int, size.split('x'))
+        rs.page_w, rs.page_h = map(int, size.split('x'))
         
         doc_type = self.doc_type.GetSelection()
         doc_size = self.doc_sizes[doc_type][-1]
         rs.max_w, rs.max_h = map(int, doc_size.split('x'))
-        
         rs.panel_w, rs.panel_h = self.preview_panel.GetClientSize()
         
         rs.word_wrap = self.chk_wrap.GetValue()

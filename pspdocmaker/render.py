@@ -36,7 +36,7 @@ class RenderSettings:
     margin_right:      int = 14
     margin_bottom:     int = 14
     
-    line_spacing:      int = 1
+    line_spacing:      int = 0
     indent_first_line: int = 0
     
     background_mode:       str = 'solid'
