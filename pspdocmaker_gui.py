@@ -104,7 +104,7 @@ class MainFrame(wx.Frame):
         self.Center()
     
     def _init_ui(self):
-        main_win = wx.BoxSizer(wx.HORIZONTAL)
+        self.main_win = wx.BoxSizer(wx.HORIZONTAL)
         
         # --- LEFT PANEL: Files ---
         left_panel = wx.BoxSizer(wx.VERTICAL)
@@ -148,7 +148,7 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_BUTTON, lambda e: self.on_move(1),  self.btn_down)
         self.Bind(wx.EVT_BUTTON, self.on_clear,              self.btn_clear)
         
-        main_win.Add(left_panel, 1, wx.EXPAND | wx.TOP | wx.LEFT | wx.BOTTOM, 10)
+        self.main_win.Add(left_panel, 1, wx.EXPAND | wx.TOP | wx.LEFT | wx.BOTTOM, 10)
         
         # --- RIGHT PANEL: Settings ---
         right_panel = wx.BoxSizer(wx.VERTICAL)
@@ -372,8 +372,9 @@ class MainFrame(wx.Frame):
         self.st_status = wx.StaticText(self.panel, label='Ready')
         right_panel.Add(self.st_status, 0, wx.ALL, 5)
         
-        main_win.Add(right_panel, 1, wx.EXPAND | wx.ALL, 5)
-        self.panel.SetSizer(main_win)
+        self.main_win.Add(right_panel, 1, wx.EXPAND | wx.ALL, 5)
+        
+        self.panel.SetSizer(self.main_win)
     
     # ---------------------------
     # Config Logic
@@ -542,15 +543,21 @@ class MainFrame(wx.Frame):
         self.ch_size.SetSelection(size_idx)
     
     def _apply_doc_type_ui(self, value: int):
-        if value == 1:
-            self.btn_keysbin.Hide()
-            self.btn_keyreset.Hide()
-            self.update_doc_sizes_widget(value)
+        show_keys = (value == 0)
         
-        if value == 0:
-            self.btn_keysbin.Show()
-            self.btn_keyreset.Show()
-            self.update_doc_sizes_widget(value)
+        item_keys = self.main_win.GetItem(self.btn_keysbin)     # wx.SizerItem или None
+        item_reset = self.main_win.GetItem(self.btn_keyreset)
+    
+        if item_keys:
+            item_keys.Show(show_keys)
+        if item_reset:
+            item_reset.Show(show_keys)
+        
+        self.update_doc_sizes_widget(value)
+        
+        # пересчитать layout
+        self.panel.Layout()
+        self.panel.SendSizeEvent()
     
     def _on_doc_type_change(self, event):
         value = event.GetSelection()
