@@ -8,6 +8,6 @@ pyinstaller --onefile --noconsole --add-data "pspdocmaker;pspdocmaker" "pspdocma
 del pspdocmaker_gui.spec
 
 del /f /q dist/pspdocmaker_gui.zip 2>nul
-7z a -tzip pspdocmaker_gui.zip dist/pspdocmaker_gui.exe
+7z a -tzip dist/pspdocmaker_gui.zip dist/pspdocmaker_gui.exe
 
 pause

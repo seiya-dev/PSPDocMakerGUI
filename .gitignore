@@ -10,5 +10,6 @@ venv
 *.pkg
 *.exe
 *.spec
+*.tmp
 
 !docs/*
