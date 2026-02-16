@@ -24,18 +24,19 @@ class RenderSettings:
     panel_w: int = 480
     panel_h: int = 480
     
-    margin_left:   int = 14
-    margin_top:    int = 14
-    margin_right:  int = 14
-    margin_bottom: int = 14
-    
     font_path: Optional[str] = None
     font_size: int = 12
     
     font_color: Tuple[int, int, int] = (255, 255, 255)
     
-    word_wrap:         bool = True
-    line_spacing:      int = 4
+    word_wrap: bool = True
+    
+    margin_left:       int = 14
+    margin_top:        int = 14
+    margin_right:      int = 14
+    margin_bottom:     int = 14
+    
+    line_spacing:      int = 1
     indent_first_line: int = 0
     
     background_mode:       str = 'solid'
@@ -53,23 +54,38 @@ class RenderSettings:
     
     background_image: Optional[str] = None
 
-class MarginsDialog(wx.Dialog):
-    def __init__(self, parent, margins):
-        super().__init__(parent, title='Set text margins:', style=wx.DEFAULT_DIALOG_STYLE)
+class ExtraRenderParamsDialog(wx.Dialog):
+    def __init__(self, parent):
+        super().__init__(parent, title='Set Extra Parameters:', style=wx.DEFAULT_DIALOG_STYLE)
+        rs = RenderSettings
         
-        grid = wx.FlexGridSizer(rows=4, cols=2, vgap=8, hgap=10)
+        extra_params = {
+            # margins
+            'top':    rs.margin_top,
+            'left':   rs.margin_left,
+            'right':  rs.margin_right,
+            'bottom': rs.margin_bottom,
+            # spacing
+            'line_spacing': rs.line_spacing,
+            'indent_first': rs.indent_first_line,
+        }
+        
+        grid = wx.FlexGridSizer(rows=6, cols=2, vgap=8, hgap=10)
         grid.AddGrowableCol(1, 1)
         
-        def add_row(label, key):
+        def add_row(label, key, vmin, vmax):
             grid.Add(wx.StaticText(self, label=label + ':'), 0, wx.ALIGN_CENTER_VERTICAL)
-            sc = wx.SpinCtrl(self, min=0, max=50, initial=int(margins.get(key, 0)))
+            sc = wx.SpinCtrl(self, min=vmin, max=vmax, initial=int(extra_params.get(key, 0)))
             grid.Add(sc, 0, wx.EXPAND)
             return sc
         
-        self.sc_top = add_row('Top', 'top')
-        self.sc_left = add_row('Left', 'left')
-        self.sc_right = add_row('Right', 'right')
-        self.sc_bottom = add_row('Bottom', 'bottom')
+        self.sc_top = add_row('Top', 'top', 0, 50)
+        self.sc_left = add_row('Left', 'left', 0, 50)
+        self.sc_right = add_row('Right', 'right', 0, 50)
+        self.sc_bottom = add_row('Bottom', 'bottom', 0, 50)
+        
+        self.sc_line_spacing = add_row('Line Spacing', 'line_spacing', 0, 10)
+        self.sc_indent_first = add_row('Indent First Line', 'indent_first', 0, 50)
         
         btns = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
         
@@ -80,17 +96,19 @@ class MarginsDialog(wx.Dialog):
         self.SetSizerAndFit(s)
         self.CentreOnParent()
 
-    def get_margins(self):
-        return {
-            'top': self.sc_top.GetValue(),
-            'left': self.sc_left.GetValue(),
-            'right': self.sc_right.GetValue(),
-            'bottom': self.sc_bottom.GetValue(),
-        }
+    def set_extra_params(self):
+        rs = RenderSettings
+        
+        rs.margin_top    = self.sc_top.GetValue()
+        rs.margin_left   = self.sc_left.GetValue()
+        rs.margin_right  = self.sc_right.GetValue()
+        rs.margin_bottom = self.sc_bottom.GetValue()
+        
+        rs.line_spacing      = self.sc_line_spacing.GetValue()
+        rs.indent_first_line = self.sc_indent_first.GetValue()
 
 @lru_cache(maxsize=64)
 def _cached_gradient(w: int, h: int, c1: tuple[int, int, int], c2: tuple[int, int, int]) -> Image.Image:
-    
     mask = Image.linear_gradient('L').resize((1, h))
     
     r = Image.eval(mask, lambda t: int(c1[0] + (c2[0] - c1[0]) * t / 255))
@@ -222,15 +240,22 @@ def render_text_to_pages(text: str, rs: RenderSettings, start_page_index: int = 
         parts.append('\n')
     norm = ''.join(parts)
     
-    max_text_w = rs.page_w - rs.margin_left - rs.margin_right
-    max_text_h = rs.page_h - rs.margin_top - rs.margin_bottom
-
-    if rs.background_mode == 'frame':
-        max_text_w -= 2 * rs.frame_thickness
-        max_text_h -= 2 * rs.frame_thickness
+    ml = rs.margin_left
+    mr = rs.margin_right
+    mt = rs.margin_top
+    mb = rs.margin_bottom
     
-    max_text_w = max(100, min(rs.page_w, max_text_w))
-    max_text_h = max(100, min(rs.page_h, max_text_h))
+    frame_pad = rs.frame_thickness if rs.background_mode == 'frame' else 0
+    ml_eff = ml + frame_pad
+    mr_eff = mr + frame_pad
+    mt_eff = mt + frame_pad
+    mb_eff = mb + frame_pad
+    
+    max_text_w = rs.page_w - ml_eff - mr_eff
+    max_text_h = rs.page_h - mt_eff - mb_eff
+    
+    max_text_w = max(50, min(rs.page_w, max_text_w))
+    max_text_h = max(50, min(rs.page_h, max_text_h))
     
     ascent, descent = font.getmetrics()
     base_line_h = ascent + descent + rs.line_spacing
@@ -239,8 +264,9 @@ def render_text_to_pages(text: str, rs: RenderSettings, start_page_index: int = 
     cur_page_index = start_page_index
     cur_img = make_background(rs, page_index=cur_page_index)
     draw = ImageDraw.Draw(cur_img)
-    x0 = rs.margin_left
-    y = rs.margin_top
+    
+    x0 = ml_eff
+    y = mt_eff
     
     def new_page():
         nonlocal cur_img, draw, y, cur_page_index

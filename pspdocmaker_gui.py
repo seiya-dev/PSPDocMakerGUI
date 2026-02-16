@@ -39,7 +39,7 @@ from pspdocmaker.render import (
     RenderSettings, _cached_gradient,
     make_background, render_image_to_page,
     split_text_to_lines, render_text_to_pages,
-    MarginsDialog,
+    ExtraRenderParamsDialog,
 )
 
 from pspdocmaker.utils import (
@@ -96,7 +96,7 @@ class MainFrame(wx.Frame):
         self._init_ui()
         
         self._load_config()
-        self._apply_config_to_widgets()
+        self._apply_config()
         
         self.font_resolver = FontResolver()
         self._ensure_default_font()
@@ -269,23 +269,19 @@ class MainFrame(wx.Frame):
         self.spn_font_size  = wx.SpinCtrl(self.panel, min=8, max=72)
         self.btn_font_path  = wx.Button(self.panel, label='Select Font...')
         self.btn_font_color = wx.Button(self.panel, label='Font Color')
-        self.btn_set_margin = wx.Button(self.panel, label='Set Margins...')
-        st_indent           = wx.StaticText(self.panel, label='Indent:')
-        self.spn_indent     = wx.SpinCtrl(self.panel, min=0, max=100)
+        self.btn_set_extra = wx.Button(self.panel, label='Set extra parameters...')
         
-        self.btn_set_margin.SetToolTip('Text padding from the image edge')
+        self.btn_set_extra.SetToolTip('Set first line indent, text margins and line spacing')
         
         row3.Add(st_font_size,        0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         row3.Add(self.spn_font_size,  0, wx.RIGHT, 10)
         row3.Add(self.btn_font_path,  0, wx.RIGHT, 10)
         row3.Add(self.btn_font_color, 0, wx.RIGHT, 10)
-        row3.Add(self.btn_set_margin, 0, wx.RIGHT, 15)
-        row3.Add(st_indent,           0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        row3.Add(self.spn_indent,     0)
+        row3.Add(self.btn_set_extra, 0, wx.RIGHT, 0)
         
         self.btn_font_path.Bind(wx.EVT_BUTTON, self.on_pick_font)
         self.btn_font_color.Bind(wx.EVT_BUTTON, self.on_pick_font_color)
-        self.btn_set_margin.Bind(wx.EVT_BUTTON, self._on_set_margin)
+        self.btn_set_extra.Bind(wx.EVT_BUTTON, self._on_set_extra)
         
         # add rows
         opts_block_gen.Add(row1, 0, wx.EXPAND | wx.ALL, 5)
@@ -413,7 +409,7 @@ class MainFrame(wx.Frame):
             v = max_v
         return v
     
-    def _apply_config_to_widgets(self):
+    def _apply_config(self):
         doc_type = self.get_int_clamped('Output', 'type', 0, 0, 1)
         
         self.doc_type.SetSelection(doc_type)
@@ -435,8 +431,7 @@ class MainFrame(wx.Frame):
         rs.margin_left   = self.get_int_clamped('Layout', 'margin_left',   rs.margin_left  , 0, 50)
         rs.margin_right  = self.get_int_clamped('Layout', 'margin_right',  rs.margin_right , 0, 50)
         rs.margin_bottom = self.get_int_clamped('Layout', 'margin_bottom', rs.margin_bottom, 0, 50)
-        
-        self.spn_indent.SetValue(int(self.cfg['Layout'].get('indent', str(RenderSettings.indent_first_line))))
+        rs.indent_first_line = self.get_int_clamped('Layout', 'indent', rs.indent_first_line, 0, 50)
         
         bg_mode = self.cfg['Background'].get('mode', RenderSettings.background_mode)
         idx = self.ch_bg_mode.FindString(bg_mode)
@@ -461,9 +456,10 @@ class MainFrame(wx.Frame):
         self.current_bg_image = self.cfg['Background'].get('image', '')
     
     def _gather_render_settings(self) -> RenderSettings:
+        rs = RenderSettings
+        
         size = self.ch_size.GetStringSelection()
-        w, h = map(int, size.split('x'))
-        rs = RenderSettings(page_w=w, page_h=h)
+        rs.page_w, rs.page_w = map(int, size.split('x'))
         
         doc_type = self.doc_type.GetSelection()
         doc_size = self.doc_sizes[doc_type][-1]
@@ -472,7 +468,7 @@ class MainFrame(wx.Frame):
         rs.panel_w, rs.panel_h = self.preview_panel.GetClientSize()
         
         rs.word_wrap = self.chk_wrap.GetValue()
-        rs.indent_first_line = self.spn_indent.GetValue()
+        
         rs.font_size = self.spn_font_size.GetValue()
         rs.font_color = hex_to_rgb(self.current_font_color)
         rs.font_path = self.current_font_path if self.current_font_path else None
@@ -499,14 +495,15 @@ class MainFrame(wx.Frame):
         self.cfg['Font']['color'] = self.current_font_color
         self.cfg['Font']['path'] = self.current_font_path
         
+        self.cfg['Layout']['word_wrap'] = '1' if self.chk_wrap.GetValue() else '0'
+        
         rs = RenderSettings
         self.cfg['Layout']['margin_top']    = str(rs.margin_top)
         self.cfg['Layout']['margin_left']   = str(rs.margin_left)
         self.cfg['Layout']['margin_right']  = str(rs.margin_right)
         self.cfg['Layout']['margin_bottom'] = str(rs.margin_bottom)
-        
-        self.cfg['Layout']['indent'] = str(self.spn_indent.GetValue())
-        self.cfg['Layout']['word_wrap'] = '1' if self.chk_wrap.GetValue() else '0'
+        self.cfg['Layout']['line_spacing']  = str(rs.line_spacing)
+        self.cfg['Layout']['indent']        = str(rs.indent_first_line)
         
         self.cfg['Background']['mode'] = self.ch_bg_mode.GetStringSelection()
         self.cfg['Background']['invert'] = '1' if self.chk_invert.GetValue() else '0'
@@ -557,23 +554,12 @@ class MainFrame(wx.Frame):
         value = event.GetSelection()
         self._apply_doc_type_ui(value)
     
-    def _on_set_margin(self, event):
-        rs = RenderSettings
-        
-        dlg = MarginsDialog(self.panel, {
-            'top': rs.margin_top,
-            'left': rs.margin_left,
-            'right': rs.margin_right,
-            'bottom': rs.margin_bottom,
-        })
+    def _on_set_extra(self, event):
+        dlg = ExtraRenderParamsDialog(self.panel)
         
         try:
             if dlg.ShowModal() == wx.ID_OK:
-                m = dlg.get_margins()
-                rs.margin_top = m['top']
-                rs.margin_left = m['left']
-                rs.margin_right = m['right']
-                rs.margin_bottom = m['bottom']
+                dlg.set_extra_params()
         finally:
             dlg.Destroy()
     
@@ -1008,8 +994,7 @@ class MainFrame(wx.Frame):
             self.spn_font_size,
             self.btn_font_path,
             self.btn_font_color,
-            self.btn_set_margin,
-            self.spn_indent,
+            self.btn_set_extra,
             # set background
             self.ch_bg_mode,
             self.chk_invert,
