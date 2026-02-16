@@ -240,6 +240,9 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
         draw.text((10, 10), f'Failed to open:\n{img_path.name}', fill=(255, 0, 0))
         return base
     
+    if img.mode not in ('RGB', 'RGBA'):
+        img = img.convert('RGBA')
+    
     iw, ih = img.size
     if iw != rs.max_w or ih != rs.max_h:
         img.thumbnail(
@@ -250,6 +253,7 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
     if for_file:
         return img
     
+    iw, ih = img.size
     bw, bh = rs.panel_w, rs.panel_h
     
     x = max(0, (bw - iw) // 2)
@@ -262,6 +266,6 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
     x = (bw - nw) // 2
     y = (bh - nh) // 2
     
-    base = Image.new('RGB', (bw, bh), (0, 0, 0, 255))
-    base.alpha_composite(img2.convert('RGB'), (x, y))
+    base = Image.new('RGBA', (bw, bh), (0, 0, 0, 255))
+    base.alpha_composite(img2.convert('RGBA'), (x, y))
     return base.convert('RGB')
