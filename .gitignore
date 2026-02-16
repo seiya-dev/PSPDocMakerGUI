@@ -9,5 +9,6 @@ venv
 *.toc
 *.pkg
 *.exe
+*.spec
 
 !docs/*
