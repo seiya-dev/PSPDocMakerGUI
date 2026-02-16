@@ -7,6 +7,7 @@ from pathlib import Path
 import random
 import re
 
+import wx
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .font_resolver import load_font
@@ -51,6 +52,41 @@ class RenderSettings:
     random_style_frame:    bool = False
     
     background_image: Optional[str] = None
+
+class MarginsDialog(wx.Dialog):
+    def __init__(self, parent, margins):
+        super().__init__(parent, title='Set text margins:', style=wx.DEFAULT_DIALOG_STYLE)
+        
+        grid = wx.FlexGridSizer(rows=4, cols=2, vgap=8, hgap=10)
+        grid.AddGrowableCol(1, 1)
+        
+        def add_row(label, key):
+            grid.Add(wx.StaticText(self, label=label + ':'), 0, wx.ALIGN_CENTER_VERTICAL)
+            sc = wx.SpinCtrl(self, min=0, max=50, initial=int(margins.get(key, 0)))
+            grid.Add(sc, 0, wx.EXPAND)
+            return sc
+        
+        self.sc_top = add_row('Top', 'top')
+        self.sc_left = add_row('Left', 'left')
+        self.sc_right = add_row('Right', 'right')
+        self.sc_bottom = add_row('Bottom', 'bottom')
+        
+        btns = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
+        
+        s = wx.BoxSizer(wx.VERTICAL)
+        s.Add(grid, 0, wx.ALL | wx.EXPAND, 12)
+        s.Add(btns, 0, wx.ALL | wx.EXPAND, 12)
+        
+        self.SetSizerAndFit(s)
+        self.CentreOnParent()
+
+    def get_margins(self):
+        return {
+            'top': self.sc_top.GetValue(),
+            'left': self.sc_left.GetValue(),
+            'right': self.sc_right.GetValue(),
+            'bottom': self.sc_bottom.GetValue(),
+        }
 
 @lru_cache(maxsize=64)
 def _cached_gradient(w: int, h: int, c1: tuple[int, int, int], c2: tuple[int, int, int]) -> Image.Image:
@@ -188,6 +224,14 @@ def render_text_to_pages(text: str, rs: RenderSettings, start_page_index: int = 
     
     max_text_w = rs.page_w - rs.margin_left - rs.margin_right
     max_text_h = rs.page_h - rs.margin_top - rs.margin_bottom
+
+    if rs.background_mode == 'frame':
+        max_text_w -= 2 * rs.frame_thickness
+        max_text_h -= 2 * rs.frame_thickness
+    
+    max_text_w = max(100, min(rs.page_w, max_text_w))
+    max_text_h = max(100, min(rs.page_h, max_text_h))
+    
     ascent, descent = font.getmetrics()
     base_line_h = ascent + descent + rs.line_spacing
     

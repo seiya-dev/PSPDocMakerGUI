@@ -39,6 +39,7 @@ from pspdocmaker.render import (
     RenderSettings, _cached_gradient,
     make_background, render_image_to_page,
     split_text_to_lines, render_text_to_pages,
+    MarginsDialog,
 )
 
 from pspdocmaker.utils import (
@@ -268,24 +269,23 @@ class MainFrame(wx.Frame):
         self.spn_font_size  = wx.SpinCtrl(self.panel, min=8, max=72)
         self.btn_font_path  = wx.Button(self.panel, label='Select Font...')
         self.btn_font_color = wx.Button(self.panel, label='Font Color')
-        #st_margin           = wx.StaticText(self.panel, label='Margin:')
-        #self.spn_margin     = wx.SpinCtrl(self.panel, min=0, max=50)
+        self.btn_set_margin = wx.Button(self.panel, label='Set Margins...')
         st_indent           = wx.StaticText(self.panel, label='Indent:')
         self.spn_indent     = wx.SpinCtrl(self.panel, min=0, max=100)
         
-        #self.spn_margin.SetToolTip('Text padding from the image edge')
+        self.btn_set_margin.SetToolTip('Text padding from the image edge')
         
         row3.Add(st_font_size,        0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         row3.Add(self.spn_font_size,  0, wx.RIGHT, 10)
         row3.Add(self.btn_font_path,  0, wx.RIGHT, 10)
-        row3.Add(self.btn_font_color, 0, wx.RIGHT, 15)
-        #row3.Add(st_margin,           0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        #row3.Add(self.spn_margin,     0, wx.RIGHT, 10)
+        row3.Add(self.btn_font_color, 0, wx.RIGHT, 10)
+        row3.Add(self.btn_set_margin, 0, wx.RIGHT, 15)
         row3.Add(st_indent,           0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         row3.Add(self.spn_indent,     0)
         
         self.btn_font_path.Bind(wx.EVT_BUTTON, self.on_pick_font)
         self.btn_font_color.Bind(wx.EVT_BUTTON, self.on_pick_font_color)
+        self.btn_set_margin.Bind(wx.EVT_BUTTON, self._on_set_margin)
         
         # add rows
         opts_block_gen.Add(row1, 0, wx.EXPAND | wx.ALL, 5)
@@ -401,9 +401,20 @@ class MainFrame(wx.Frame):
         except Exception as e:
             wx.MessageBox(f'Failed to save config:\n{e}', 'Error', wx.ICON_ERROR)
     
+    def get_int_clamped(self, section, option, default, min_v=None, max_v=None):
+        try:
+            v = self.cfg.getint(section, option, fallback=default)
+        except (ValueError, configparser.Error):
+            v = default
+        
+        if min_v is not None and v < min_v:
+            v = min_v
+        if max_v is not None and v > max_v:
+            v = max_v
+        return v
+    
     def _apply_config_to_widgets(self):
-        doc_type = int(self.cfg['Output'].get('type', '0'))
-        doc_type = doc_type if 0 <= doc_type < self.doc_type.GetCount() else 0
+        doc_type = self.get_int_clamped('Output', 'type', 0, 0, 1)
         
         self.doc_type.SetSelection(doc_type)
         self._apply_doc_type_ui(doc_type)
@@ -419,7 +430,12 @@ class MainFrame(wx.Frame):
         
         self.spn_font_size.SetValue(int(self.cfg['Font'].get('size', str(RenderSettings.font_size))))
         
-        #self.spn_margin.SetValue(int(self.cfg['Layout'].get('margin', '10')))
+        rs = RenderSettings
+        rs.margin_top    = self.get_int_clamped('Layout', 'margin_top',    rs.margin_top   , 0, 50)
+        rs.margin_left   = self.get_int_clamped('Layout', 'margin_left',   rs.margin_left  , 0, 50)
+        rs.margin_right  = self.get_int_clamped('Layout', 'margin_right',  rs.margin_right , 0, 50)
+        rs.margin_bottom = self.get_int_clamped('Layout', 'margin_bottom', rs.margin_bottom, 0, 50)
+        
         self.spn_indent.SetValue(int(self.cfg['Layout'].get('indent', str(RenderSettings.indent_first_line))))
         
         bg_mode = self.cfg['Background'].get('mode', RenderSettings.background_mode)
@@ -467,9 +483,6 @@ class MainFrame(wx.Frame):
         rs.random_style_frame = self.chk_rand_frame.GetValue()
         rs.frame_thickness = self.spn_frame_thick.GetValue()
         
-        #rs_margin = self.spn_margin.GetValue() + rs.frame_thickness
-        #rs.margin_left, rs.margin_top, rs.margin_right, rs.margin_bottom = (rs_margin,) * 4
-        
         rs.bg_color = hex_to_rgb(self.bg_solid)
         rs.grad_start = hex_to_rgb(self.bg_start)
         rs.grad_end = hex_to_rgb(self.bg_end)
@@ -486,7 +499,12 @@ class MainFrame(wx.Frame):
         self.cfg['Font']['color'] = self.current_font_color
         self.cfg['Font']['path'] = self.current_font_path
         
-        #self.cfg['Layout']['margin'] = str(self.spn_margin.GetValue())
+        rs = RenderSettings
+        self.cfg['Layout']['margin_top']    = str(rs.margin_top)
+        self.cfg['Layout']['margin_left']   = str(rs.margin_left)
+        self.cfg['Layout']['margin_right']  = str(rs.margin_right)
+        self.cfg['Layout']['margin_bottom'] = str(rs.margin_bottom)
+        
         self.cfg['Layout']['indent'] = str(self.spn_indent.GetValue())
         self.cfg['Layout']['word_wrap'] = '1' if self.chk_wrap.GetValue() else '0'
         
@@ -538,6 +556,26 @@ class MainFrame(wx.Frame):
     def _on_doc_type_change(self, event):
         value = event.GetSelection()
         self._apply_doc_type_ui(value)
+    
+    def _on_set_margin(self, event):
+        rs = RenderSettings
+        
+        dlg = MarginsDialog(self.panel, {
+            'top': rs.margin_top,
+            'left': rs.margin_left,
+            'right': rs.margin_right,
+            'bottom': rs.margin_bottom,
+        })
+        
+        try:
+            if dlg.ShowModal() == wx.ID_OK:
+                m = dlg.get_margins()
+                rs.margin_top = m['top']
+                rs.margin_left = m['left']
+                rs.margin_right = m['right']
+                rs.margin_bottom = m['bottom']
+        finally:
+            dlg.Destroy()
     
     # ---------------------------
     # File Management
@@ -970,7 +1008,7 @@ class MainFrame(wx.Frame):
             self.spn_font_size,
             self.btn_font_path,
             self.btn_font_color,
-            #self.spn_margin,
+            self.btn_set_margin,
             self.spn_indent,
             # set background
             self.ch_bg_mode,
