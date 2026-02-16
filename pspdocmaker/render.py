@@ -240,11 +240,11 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
         draw.text((10, 10), f'Failed to open:\n{img_path.name}', fill=(255, 0, 0))
         return base
     
-    if img.mode not in ('RGB', 'RGBA'):
+    if img.mode not in {'RGB', 'RGBA', 'L', 'LA'}:
         img = img.convert('RGBA')
     
     iw, ih = img.size
-    if iw != rs.max_w or ih != rs.max_h:
+    if iw > rs.max_w or ih > rs.max_h:
         img.thumbnail(
             (rs.max_w, rs.max_h),
             Image.Resampling.LANCZOS
@@ -253,19 +253,18 @@ def render_image_to_page(img_path: Path, rs: RenderSettings, for_file: bool = Fa
     if for_file:
         return img
     
-    iw, ih = img.size
     bw, bh = rs.panel_w, rs.panel_h
-    
-    x = max(0, (bw - iw) // 2)
-    y = max(0, (bh - ih) // 2)
+    iw, ih = img.size
     
     scale = min(bw / iw, bh / ih)
     nw, nh = int(iw * scale), int(ih * scale)
-    img2 = img.resize((nw, nh), Image.LANCZOS)
+    
+    img = img.convert('RGB')
+    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
     
     x = (bw - nw) // 2
     y = (bh - nh) // 2
     
     base = Image.new('RGBA', (bw, bh), (0, 0, 0, 255))
-    base.alpha_composite(img2.convert('RGBA'), (x, y))
+    base.alpha_composite(img.convert('RGBA'), (x, y))
     return base.convert('RGB')

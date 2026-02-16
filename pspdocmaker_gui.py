@@ -406,6 +406,7 @@ class MainFrame(wx.Frame):
         doc_type = doc_type if 0 <= doc_type < self.doc_type.GetCount() else 0
         
         self.doc_type.SetSelection(doc_type)
+        self._apply_doc_type_ui(doc_type)
         
         doc_sizes = self.doc_sizes[doc_type]
         self.update_doc_sizes_widget(doc_type)
@@ -523,9 +524,7 @@ class MainFrame(wx.Frame):
         self.ch_size.AppendItems(doc_sizes)
         self.ch_size.SetSelection(size_idx)
     
-    def _on_doc_type_change(self, event):
-        value = event.GetSelection()
-        
+    def _apply_doc_type_ui(self, value: int):
         if value == 1:
             self.btn_keysbin.Hide()
             self.btn_keyreset.Hide()
@@ -535,6 +534,10 @@ class MainFrame(wx.Frame):
             self.btn_keysbin.Show()
             self.btn_keyreset.Show()
             self.update_doc_sizes_widget(value)
+    
+    def _on_doc_type_change(self, event):
+        value = event.GetSelection()
+        self._apply_doc_type_ui(value)
     
     # ---------------------------
     # File Management
