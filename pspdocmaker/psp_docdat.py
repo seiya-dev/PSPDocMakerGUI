@@ -1,11 +1,11 @@
 # coding: utf-8
 
-from typing import List, Tuple, Optional, Iterable
-from pathlib import Path
 import hashlib
-import struct
 import hmac
 import os
+import struct
+from collections.abc import Iterable
+from pathlib import Path
 
 import wx
 
@@ -14,10 +14,9 @@ try:
 except ImportError as e:
     raise SystemExit('This app requires Crypto. Install with: pip install pycryptodome') from e
 
-from .hexdump import hexdump
-from .utils import ensure_dir
 from .bboxmin import bbox_mac_gen_enc
 from .doc_keys import KEY_VAULT
+from .utils import ensure_dir
 
 PS1_DES_KEY = bytes([0x39, 0xF7, 0xEF, 0xA1, 0x6C, 0xCE, 0x5F, 0x4C])
 PS1_DES_IV  = bytes([0xA8, 0x19, 0xC4, 0xF5, 0xE1, 0x54, 0xE3, 0x0B])
@@ -53,7 +52,7 @@ def desEncrypt(doc_type: int, data: bytes) -> bytes:
 
 def desChangeKey(doc_key: bytes) -> bytes:
     doc_xor = bytes([0xF9, 0x32, 0xFF, 0x26, 0x47, 0x4A, 0x8D, 0xC0])
-    des_key = bytes(d ^ x for d, x in zip(doc_key, doc_xor))
+    des_key = bytes(d ^ x for d, x in zip(doc_key, doc_xor, strict=True))
     return des_key
 
 def sha1hash(data: bytes) -> bytes:
@@ -80,7 +79,7 @@ def create_header(gameid, pages):
     struct.pack_into('<I', buf, 0x1C, 0 if len(pages) < 100 else 1)
     return buf
 
-def pack_pngs_to_dat(game_id: str, doc_type: int, ins_id: bytes, png_paths: List[Path], out_dir: Path) -> None:
+def pack_pngs_to_dat(game_id: str, doc_type: int, ins_id: bytes, png_paths: list[Path], out_dir: Path) -> None:
     out_dat = out_dir / 'DOCUMENT.DAT'
     out_key = out_dir / 'KEYS.BIN'
     ensure_dir(out_dir)
@@ -103,7 +102,7 @@ def pack_pngs_to_dat(game_id: str, doc_type: int, ins_id: bytes, png_paths: List
         del png_paths[999:]
     
     if doc_type not in (0, 1):
-        wx.MessageBox(f'Bad DOC parameters', 'Error', wx.ICON_ERROR)
+        wx.MessageBox('Bad DOC parameters', 'Error', wx.ICON_ERROR)
         return
     
     pgd_buf = b'\0PGD\1\0\0\0\1\0\0\0\0\0\0\0'
@@ -149,7 +148,7 @@ def pack_pngs_to_dat(game_id: str, doc_type: int, ins_id: bytes, png_paths: List
     
     pgd_buf += bytes(0x08)
     
-    for i, p in enumerate(pages):
+    for _, p in enumerate(pages):
         page_len = 0x20 + len(p) + hash_block_size
         page_info_head = bytearray(0x20)
         struct.pack_into('<I', page_info_head, 0, page_len)
@@ -168,7 +167,7 @@ def pack_pngs_to_dat(game_id: str, doc_type: int, ins_id: bytes, png_paths: List
         write_key = True
         
         if os.path.exists(out_key):
-            with open(out_key, "r", encoding="utf-8") as f:
+            with open(out_key, encoding="utf-8") as f:
                 e_key = f.read()
             
             if e_key != ins_id and len(e_key) == 0x10:
@@ -192,7 +191,7 @@ def pack_pngs_to_dat(game_id: str, doc_type: int, ins_id: bytes, png_paths: List
     
     wx.MessageBox(f'Created:\n{out_dat}', 'Success', wx.OK | wx.ICON_INFORMATION)
 
-def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
+def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> list[Path]:
     try:
         pgd_header = b'\0PGD\1\0\0\0\1\0\0\0\0\0\0\0'
         doc_header = b'DOC \0\0\1\0\0\0\1\0'
@@ -229,7 +228,7 @@ def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
                     doc_type = 1
                     doc_size_flag = -1
             
-            header_hash = makehash(doc_type, data[0x10:0x70])
+            # header_hash = makehash(doc_type, data[0x10:0x70])
             if makehash(doc_type, data[0x10:0x70]) != data[0x80:0x90]:
                 return []
             
@@ -343,7 +342,7 @@ def extract_pngs_from_dat(dat_path: Path, out_dir: Path) -> List[Path]:
             return out_files
         
         return []
-    except:
+    except Exception:
         return []
 
 def iter_png_blobs_from_dat(data: bytes) -> Iterable[bytes]:

@@ -1,0 +1,43 @@
+[tool.ruff]
+target-version = "py312"
+indent-width = 4
+
+extend-exclude = [
+".git",
+".venv",
+"venv",
+"**/__pycache__/**",
+"build",
+"dist",
+"_tmp_pages",
+]
+
+[tool.ruff.lint]
+select = [
+"E", # pycodestyle errors
+"F", # Pyflakes: undefined names, unused imports, and related issues
+"W", # pycodestyle warnings
+"I", # isort-compatible import sorting
+"UP", # pyupgrade: modernize code for the target Python version
+"B", # flake8-bugbear: likely bugs and questionable patterns
+"SIM", # flake8-simplify: simplify unnecessarily complex code
+"C4", # flake8-comprehensions: improve comprehensions and collection creation
+"PIE", # flake8-pie: miscellaneous unnecessary or suboptimal patterns
+"RUF", # Ruff-specific rules
+]
+
+ignore = [
+"E501", # Do not enforce a maximum line length
+"W293", # Allow whitespace on otherwise blank lines
+"RUF003", # Allow ambiguous Unicode characters in comments
+"UP009", # Allow explicit UTF-8 coding declarations
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pspdocmaker"]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

@@ -1,18 +1,18 @@
 # coding: utf-8
 
-from typing import List, Tuple, Optional, Iterable
 from pathlib import Path
 
 import wx
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import ImageDraw, ImageFont
+
 
 def clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
-def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
+def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
     return '#{:02x}{:02x}{:02x}'.format(*rgb)
 
-def hex_to_rgb(h: str) -> Tuple[int, int, int]:
+def hex_to_rgb(h: str) -> tuple[int, int, int]:
     h = h.strip()
     if h.startswith('#'):
         h = h[1:]
@@ -24,7 +24,7 @@ def hex_to_rgb(h: str) -> Tuple[int, int, int]:
         return (255, 255, 255) # Fallback
 
 def wx_col_to_hex(c: wx.Colour) -> str:
-    return '#{:02x}{:02x}{:02x}'.format(c.Red(), c.Green(), c.Blue())
+    return f'#{c.Red():02x}{c.Green():02x}{c.Blue():02x}'
 
 def detect_text_encoding(path: Path) -> str:
     raw = path.read_bytes()
@@ -46,7 +46,7 @@ def detect_text_encoding(path: Path) -> str:
 def ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
-def list_image_files(folder: Path) -> List[Path]:
+def list_image_files(folder: Path) -> list[Path]:
     exts = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff', '.webp'}
     out = []
     for f in sorted(folder.rglob('*')):
@@ -54,7 +54,7 @@ def list_image_files(folder: Path) -> List[Path]:
             out.append(f)
     return out
 
-def list_text_files(folder: Path) -> List[Path]:
+def list_text_files(folder: Path) -> list[Path]:
     exts = {'.txt'}
     out = []
     for f in sorted(folder.rglob('*')):

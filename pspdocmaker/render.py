@@ -1,17 +1,17 @@
 # coding: utf-8
 
-from dataclasses import dataclass
-from functools import lru_cache
-from typing import List, Tuple, Optional, Iterable
-from pathlib import Path
 import random
 import re
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 import wx
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .font_resolver import load_font
-from .utils import get_w, clamp
+from .utils import clamp, get_w
+
 
 @dataclass
 class RenderSettings:
@@ -24,10 +24,10 @@ class RenderSettings:
     panel_w: int = 480
     panel_h: int = 480
     
-    font_path: Optional[str] = None
+    font_path: str | None = None
     font_size: int = 12
     
-    font_color: Tuple[int, int, int] = (255, 255, 255)
+    font_color: tuple[int, int, int] = (255, 255, 255)
     
     word_wrap: bool = True
     
@@ -41,10 +41,10 @@ class RenderSettings:
     
     background_mode:       str = 'solid'
     
-    bg_color:              Tuple[int, int, int] = (0, 0, 0)
-    grad_start:            Tuple[int, int, int] = (10, 10, 10)
-    grad_end:              Tuple[int, int, int] = (70, 70, 70)
-    frame_color:           Tuple[int, int, int] = (255, 255, 255)
+    bg_color:              tuple[int, int, int] = (0, 0, 0)
+    grad_start:            tuple[int, int, int] = (10, 10, 10)
+    grad_end:              tuple[int, int, int] = (70, 70, 70)
+    frame_color:           tuple[int, int, int] = (255, 255, 255)
     
     frame_thickness:       int = 5
     
@@ -52,7 +52,7 @@ class RenderSettings:
     random_style_gradient: bool = False
     random_style_frame:    bool = False
     
-    background_image: Optional[str] = None
+    background_image: str | None = None
 
 class ExtraRenderParamsDialog(wx.Dialog):
     def __init__(self, parent):
@@ -186,7 +186,7 @@ def make_background(rs: RenderSettings, page_index: int = 0) -> Image.Image:
     
     return base
 
-def split_text_to_lines(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, max_width: int, rs: RenderSettings) -> List[str]:
+def split_text_to_lines(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, max_width: int, rs: RenderSettings) -> list[str]:
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     lines_out = []
     for raw_line in text.split('\n'):
@@ -223,18 +223,20 @@ def split_text_to_lines(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.Im
             lines_out.append(cur.rstrip('\n'))
     return lines_out
 
-def render_text_to_pages(text: str, rs: RenderSettings, start_page_index: int = 0) -> List[Image.Image]:
+def render_text_to_pages(text: str, rs: RenderSettings, start_page_index: int = 0) -> list[Image.Image]:
     PAGEBREAK_TOKEN = '<<PAGEBREAK>>'
     INLINE_PB = '@pb@'
     font = load_font(rs.font_path, rs.font_size)
     
-    parts: List[str] = []
+    parts: list[str] = []
     for line in text.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
         if INLINE_PB in line:
             segs = line.split(INLINE_PB)
             for i, seg in enumerate(segs):
-                if seg != '': parts.append(seg)
-                if i != len(segs) - 1: parts.append('\n'+PAGEBREAK_TOKEN+'\n')
+                if seg != '':
+                    parts.append(seg)
+                if i != len(segs) - 1:
+                    parts.append('\n'+PAGEBREAK_TOKEN+'\n')
         else:
             parts.append(line)
         parts.append('\n')

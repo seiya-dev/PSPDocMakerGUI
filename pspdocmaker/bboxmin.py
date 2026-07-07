@@ -2,12 +2,13 @@
 # BBOX minimal implementation for encrypted PS1 DOCUMENT.DAT
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple
+
 from Crypto.Cipher import AES
+
 
 class BBoxException(Exception):
     def __init__(self, message: str = ''):
-        super().__init__(message or f'BBox Error')
+        super().__init__(message or 'BBox Error')
 
 def _raise(msg: str) -> None:
     raise BBoxException(msg)
@@ -35,7 +36,7 @@ def BBMacInit(mkey: MACKey) -> int:
     mkey.key[:] = b'\x00' * 0x10
     mkey.pad[:] = b'\x00' * 0x10
 
-def _sub_158_encrypt_block(block: bytes, key: bytearray, key_type: int) -> Tuple[bytes, bytes]:
+def _sub_158_encrypt_block(block: bytes, key: bytearray, key_type: int) -> tuple[bytes, bytes]:
     if len(block) % 0x10 != 0:
         _raise('Encrypt block size must be multiple of 16')
     
@@ -74,7 +75,7 @@ def BBMacUpdate(mkey: MACKey, buf: bytes):
     p = 0
     while p < full_len:
         chunk = stream[p:p + min(0x0800, full_len - p)]
-        ct, key_next = _sub_158_encrypt_block(chunk, mkey.key, 0x38)
+        _, key_next = _sub_158_encrypt_block(chunk, mkey.key, 0x38)
         mkey.key[:] = key_next
         p += len(chunk)
 
@@ -89,7 +90,7 @@ def left_shift_1(block16: bytes) -> bytes:
         b[15] ^= 0x87
     return bytes(b)
 
-def BBMacFinal(mkey: MACKey, out16: bytearray, vkey: Optional[bytes]) -> int:
+def BBMacFinal(mkey: MACKey, out16: bytearray, vkey: bytes | None) -> int:
     if mkey.pad_size > 0x10:
         _raise('MAC Key padding size must be do not exceed 16 bytes')
     
@@ -111,7 +112,7 @@ def BBMacFinal(mkey: MACKey, out16: bytearray, vkey: Optional[bytes]) -> int:
         pad[i] ^= subkey[i]
     
     final_block = bytes(pad)
-    ct, key_next = _sub_158_encrypt_block(final_block, mkey.key, 0x38)
+    ct, _ = _sub_158_encrypt_block(final_block, mkey.key, 0x38)
     tmp1 = bytearray(ct[-0x10:])
     
     for i in range(0x10):

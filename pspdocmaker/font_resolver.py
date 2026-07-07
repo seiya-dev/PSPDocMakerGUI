@@ -1,15 +1,17 @@
 # coding: utf-8
 
-from typing import List, Tuple, Optional, Iterable
+import os
+import subprocess
+import sys
 from pathlib import Path
-import sys, os
 
-from PIL import ImageFont
 import wx
+from PIL import ImageFont
+
 
 class FontResolver:
     # Resolve wx.Font to a real font file path in a cross-platform way.
-    def resolve(self, wx_font: wx.Font) -> Optional[str]:
+    def resolve(self, wx_font: wx.Font) -> str | None:
         if sys.platform.startswith('win'):
             return self._resolve_windows(wx_font)
         else:
@@ -17,7 +19,7 @@ class FontResolver:
     
     # ---------------- Windows ----------------
     
-    def _resolve_windows(self, wx_font: wx.Font) -> Optional[str]:
+    def _resolve_windows(self, wx_font: wx.Font) -> str | None:
         try:
             import winreg
         except ImportError:
@@ -73,7 +75,7 @@ class FontResolver:
     
     # ---------------- Linux ----------------
     
-    def _resolve_linux(self, wx_font: wx.Font) -> Optional[str]:
+    def _resolve_linux(self, wx_font: wx.Font) -> str | None:
         family = wx_font.GetFaceName()
         if not family:
             return None
@@ -108,11 +110,11 @@ class FontResolver:
         
         return None
 
-def load_font(font_path: Optional[str], size: int) -> ImageFont.FreeTypeFont:
+def load_font(font_path: str | None, size: int) -> ImageFont.FreeTypeFont:
     if not font_path:
         raise ValueError('Font path is not set')
     
     try:
         return ImageFont.truetype(font_path, size)
     except Exception as e:
-        raise RuntimeError(f'Failed to load font:\n{font_path}\n{e}')
+        raise RuntimeError(f'Failed to load font:\n{font_path}\n{e}') from e

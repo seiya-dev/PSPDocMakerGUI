@@ -2,15 +2,13 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+import configparser
 import os
 import re
-import sys
 import shutil
+import sys
 import threading
-import configparser
-
 from pathlib import Path
-from typing import List, Tuple, Optional, Iterable
 
 # ---------------------------
 # Dependencies
@@ -19,12 +17,11 @@ from typing import List, Tuple, Optional, Iterable
 try:
     import wx
     import wx.lib.scrolledpanel
-    from wx.lib.agw.floatspin import FloatSpin
 except ImportError as e:
     raise SystemExit('This app requires wxPython. Install with: pip install wxpython') from e
 
 try:
-    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from PIL import Image, ImageFont
 except ImportError as e:
     raise SystemExit('This app requires Pillow. Install with: pip install pillow') from e
 
@@ -33,19 +30,26 @@ except ImportError as e:
 # ---------------------------
 
 from pspdocmaker.font_resolver import FontResolver
-from pspdocmaker.psp_docdat import POPS_VER_KEY, extract_pngs_from_dat, pack_pngs_to_dat, iter_png_blobs_from_dat
-
-from pspdocmaker.render import (
-    RenderSettings, _cached_gradient,
-    make_background, render_image_to_page,
-    split_text_to_lines, render_text_to_pages,
-    ExtraRenderParamsDialog,
+from pspdocmaker.psp_docdat import (
+    POPS_VER_KEY,
+    extract_pngs_from_dat,
+    pack_pngs_to_dat,
 )
-
+from pspdocmaker.render import (
+    ExtraRenderParamsDialog,
+    RenderSettings,
+    render_image_to_page,
+    render_text_to_pages,
+)
 from pspdocmaker.utils import (
-    rgb_to_hex, hex_to_rgb, wx_col_to_hex, detect_text_encoding,
-    ensure_dir, list_image_files, list_text_files, is_dat_file,
+    detect_text_encoding,
+    ensure_dir,
+    hex_to_rgb,
+    is_dat_file,
+    list_image_files,
+    list_text_files,
     width_cache,
+    wx_col_to_hex,
 )
 
 # ---------------------------
@@ -72,8 +76,8 @@ class MainFrame(wx.Frame):
         self.base_dir = Path.cwd()
         self.temp_dir = self.base_dir / '_tmp_pages'
         
-        self.inputs: List[Path] = []
-        self.preview_pages: List[Path] = []
+        self.inputs: list[Path] = []
+        self.preview_pages: list[Path] = []
         self.preview_index = 0
         self.preview_bitmap = None
         
@@ -647,7 +651,7 @@ class MainFrame(wx.Frame):
             paths = list_image_files(folder) + list_text_files(folder) + list(folder.rglob('*.dat'))
             self._process_added_paths(paths)
     
-    def _process_added_paths(self, paths: List[Path]):
+    def _process_added_paths(self, paths: list[Path]):
         dats = [p for p in paths if is_dat_file(p)]
         if dats:
             dlg = wx.MessageDialog(self, 'DAT file(s) detected. Extract PNGs?', 'DAT Detected', wx.YES_NO | wx.ICON_QUESTION)
@@ -676,7 +680,8 @@ class MainFrame(wx.Frame):
     
     def on_remove(self, event):
         selections = self.lst_files.GetSelections()
-        if not selections: return
+        if not selections:
+            return
         # Remove in reverse order
         for idx in sorted(selections, reverse=True):
             if 0 <= idx < len(self.inputs):
@@ -689,7 +694,8 @@ class MainFrame(wx.Frame):
     
     def on_move(self, delta):
         selections = self.lst_files.GetSelections()
-        if len(selections) != 1: return
+        if len(selections) != 1:
+            return
         i = selections[0]
         j = i + delta
         if 0 <= j < len(self.inputs):
@@ -709,7 +715,8 @@ class MainFrame(wx.Frame):
         try:
             rgb = hex_to_rgb(current_hex)
             data.SetColour(wx.Colour(*rgb))
-        except: pass
+        except Exception:
+            pass
         
         with wx.ColourDialog(self, data) as dlg:
             if dlg.ShowModal() == wx.ID_OK:
@@ -718,22 +725,27 @@ class MainFrame(wx.Frame):
     
     def on_pick_font_color(self, e):
         c = self._pick_color('Font Color', self.current_font_color)
-        if c: self.current_font_color = c
+        if c:
+            self.current_font_color = c
     
     def on_pick_bg_color(self, e):
         c = self._pick_color('Background Color', self.bg_solid)
-        if c: self.bg_solid = c
+        if c:
+            self.bg_solid = c
     
     def on_pick_grad(self, which):
         curr = self.bg_start if which == 'start' else self.bg_end
         c = self._pick_color(f'Gradient {which}', curr)
         if c:
-            if which == 'start': self.bg_start = c
-            else: self.bg_end = c
+            if which == 'start':
+                self.bg_start = c
+            else:
+                self.bg_end = c
     
     def on_pick_frame_color(self, e):
         c = self._pick_color('Frame Color', self.bg_frame)
-        if c: self.bg_frame = c
+        if c:
+            self.bg_frame = c
     
     def _ensure_default_font(self):
         # Ensure a valid default font is selected using FontResolver.
@@ -878,7 +890,7 @@ class MainFrame(wx.Frame):
         width_cache.clear()
         self.reset_temp_dir()
         
-        pages: List[Image.Image] = []
+        pages: list[Image.Image] = []
         page_index = 0
         
         def add_pages(new_pages):
@@ -913,7 +925,7 @@ class MainFrame(wx.Frame):
                     wx.OK | wx.ICON_WARNING,
                 )
                 return
-            files = list()
+            files = []
             for i in range(len(sel)):
                 files.append(self.inputs[sel[i]])
         else:
@@ -1076,17 +1088,20 @@ class MainFrame(wx.Frame):
             return
         
         with wx.DirDialog(self, 'Select output folder', style=wx.DD_DEFAULT_STYLE) as dd:
-            if dd.ShowModal() == wx.ID_CANCEL: return
+            if dd.ShowModal() == wx.ID_CANCEL:
+                return
             self.dest_dir = Path(dd.GetPath())
             self._start_render_thread(for_file = True)
     
     def on_extract_dat(self, event):
         with wx.FileDialog(self, 'Select DOCUMENT.DAT', wildcard='DAT files (*.dat)|*.dat', style=wx.FD_OPEN) as fd:
-            if fd.ShowModal() == wx.ID_CANCEL: return
+            if fd.ShowModal() == wx.ID_CANCEL:
+                return
             dat_path = Path(fd.GetPath())
         
         with wx.DirDialog(self, 'Select output folder', style=wx.DD_DEFAULT_STYLE) as dd:
-            if dd.ShowModal() == wx.ID_CANCEL: return
+            if dd.ShowModal() == wx.ID_CANCEL:
+                return
             out_dir = Path(dd.GetPath())
         
         try:
